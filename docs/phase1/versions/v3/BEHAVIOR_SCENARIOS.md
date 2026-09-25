@@ -14,6 +14,7 @@
 - `unknown_place_recorded_as_exploration`: `True`
 - `time_not_double_booked`: `True`
 - `alternative_or_abandonment_path_explicit`: `True`
+- `future_acceptance_distinct_from_takeover`: `True`
 - `resume_capacity_is_reduced`: `True`
 
 ### 决定链
@@ -21,14 +22,16 @@
 - `caregiver-food-plan` 第 1 日 480 分钟：personal_hunger_and_dependent_care_need
   可见信息：['near cattail patch observed', 'alternative caregiver present=True', 'no known distant food location; a distant trip would be exploration']
   想到的办法：['take_dependent_to_near_patch', 'ask_alternative_caregiver_and_search_food', 'explore_unknown_direction_for_food', 'postpone_search_and_provide_care']
-  选择：ask_alternative_caregiver_and_search_food；理由：['hunger=0.72', 'fatigue=0.45', 'child care cannot be skipped', ('alternative availability=True', 'alternative willingness=0.67', 'care request accepted=True')]
+  选择：ask_alternative_caregiver_and_search_food；理由：['hunger=0.72', 'fatigue=0.45', 'child care cannot be skipped', ('alternative availability=True', 'alternative willingness=0.68', 'care request accepted=True')]
   实际结果：search scheduled after care arrangement
 
 ### 关键事件
 
-- 第 1 日 480 分钟 `decision`: {'trigger': 'personal_hunger_and_dependent_care_need', 'chosen_option': 'ask_alternative_caregiver_and_search_food', 'work_scheduled': True, 'care_request_available': True, 'care_request_willingness': 0.6655679999999999, 'care_request_accepted': True}
-- 第 1 日 485 分钟 `care_request`: {'target_person_id': 'p000340', 'start_minute': 840, 'end_minute': 1020, 'availability': True, 'willingness': 0.6655679999999999}
-- 第 1 日 490 分钟 `care_reply`: {'accepted': True, 'actual_takeover': True}
+- 第 1 日 480 分钟 `decision`: {'trigger': 'personal_hunger_and_dependent_care_need', 'chosen_option': 'ask_alternative_caregiver_and_search_food', 'work_scheduled': True, 'care_request_available': True, 'care_request_willingness': 0.68382, 'care_request_accepted': True}
+- 第 1 日 485 分钟 `care_request`: {'target_person_id': 'p000340', 'start_minute': 840, 'end_minute': 1020, 'availability': True, 'willingness': 0.68382}
+- 第 1 日 490 分钟 `care_reply`: {'accepted': True, 'future_commitment': True, 'actual_takeover': False, 'scheduled_start_minute': 840}
+- 第 1 日 840 分钟 `care_takeover_started`: {'dependent_id': 'p000341', 'replaces_future_commitment': True}
+- 第 1 日 1020 分钟 `care_takeover_completed`: {'dependent_id': 'p000341', 'actual_takeover': True}
 
 ### 说明
 
@@ -127,18 +130,18 @@
 
 ### 关键事件
 
-- 第 1 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -1100.0, 'hunger': 0.47, 'work_capacity': 0.6335999999999998}
-- 第 2 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -2200.0, 'hunger': 0.69, 'work_capacity': 0.508}
-- 第 3 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -3300.0, 'hunger': 0.9099999999999999, 'work_capacity': 0.3936}
-- 第 4 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -4400.0, 'hunger': 1.0, 'work_capacity': 0.3226}
-- 第 5 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -5500.0, 'hunger': 1.0, 'work_capacity': 0.3006}
-- 第 6 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -6600.0, 'hunger': 1.0, 'work_capacity': 0.26739999999999997}
-- 第 7 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -7700.0, 'hunger': 1.0, 'work_capacity': 0.24539999999999998}
-- 第 8 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -8800.0, 'hunger': 1.0, 'work_capacity': 0.2122}
-- 第 9 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -9900.0, 'hunger': 1.0, 'work_capacity': 0.19019999999999998}
-- 第 10 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -11000.0, 'hunger': 1.0, 'work_capacity': 0.15700000000000003}
-- 第 11 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -12100.0, 'hunger': 1.0, 'work_capacity': 0.135}
-- 第 12 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -13200.0, 'hunger': 1.0, 'work_capacity': 0.1018}
+- 第 1 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -1100.0, 'hunger': 0.47, 'work_capacity': 0.7994999999999999}
+- 第 2 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -2200.0, 'hunger': 0.69, 'work_capacity': 0.7565}
+- 第 3 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -3300.0, 'hunger': 0.9099999999999999, 'work_capacity': 0.7235}
+- 第 4 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -4400.0, 'hunger': 1.0, 'work_capacity': 0.7}
+- 第 5 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -5500.0, 'hunger': 1.0, 'work_capacity': 0.7}
+- 第 6 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -6600.0, 'hunger': 1.0, 'work_capacity': 0.6900000000000001}
+- 第 7 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -7700.0, 'hunger': 1.0, 'work_capacity': 0.686}
+- 第 8 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -8800.0, 'hunger': 1.0, 'work_capacity': 0.654}
+- 第 9 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -9900.0, 'hunger': 1.0, 'work_capacity': 0.632}
+- 第 10 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -11000.0, 'hunger': 1.0, 'work_capacity': 0.6}
+- 第 11 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -12100.0, 'hunger': 1.0, 'work_capacity': 0.578}
+- 第 12 日 1200 分钟 `daily_body_update`: {'ration_kcal': 1200.0, 'deficit_kcal': 1100.0, 'energy_balance_kcal': -13200.0, 'hunger': 1.0, 'work_capacity': 0.5459999999999999}
 - 另有 `2` 个事件保存在机器结果中。
 
 ### 说明

@@ -88,6 +88,8 @@ class HouseholdRuntime:
     migration_travel_debt_hours: float = 0.0
     knowledge_sharing_hours: float = 0.0
     shelter_completed_day: int | None = None
+    shelter_attempt_hours: float = 0.0
+    shelter_material_failure_days: int = 0
     fire_first_success_day: int | None = None
     fire_first_attempt_day: int | None = None
     fire_attempts: int = 0
@@ -110,6 +112,20 @@ class HouseholdRuntime:
     last_consumed_kcal: float = 0.0
     last_water_ratio: float = 1.0
     last_labour_hours: float = 0.0
+    last_water_method: str = "none"
+    last_water_distance_km: float = 0.0
+    last_mobile_people: int = 0
+    last_dependent_people: int = 0
+    last_direct_capacity_l: float = 0.0
+    last_water_hours: float = 0.0
+    last_water_delivered_l: float = 0.0
+    last_migration_hours: float = 0.0
+    last_hours_before_water: float = 0.0
+    last_potential_hours: float = 0.0
+    last_care_hours: float = 0.0
+    last_water_emergency: bool = False
+    last_care_overlap_allowance: float = 0.0
+    last_care_overlap_used: float = 0.0
 
     @property
     def skills(self) -> set[str]:
@@ -137,6 +153,8 @@ class SurvivalRunResult:
     acquisition_paths: dict[str, dict[str, Any]]
     distribution_diagnostics: dict[str, Any]
     integration_diagnostics: dict[str, Any]
+    household_daily_records: list[dict[str, Any]]
+    person_daily_records: list[dict[str, Any]]
     resource_consumption_kg: dict[str, float]
     migration_summary: dict[str, Any]
     final_resource_stock_kg: dict[str, float]
@@ -157,6 +175,8 @@ class SurvivalRunResult:
             "acquisition_paths": self.acquisition_paths,
             "distribution_diagnostics": self.distribution_diagnostics,
             "integration_diagnostics": self.integration_diagnostics,
+            "household_daily_records": self.household_daily_records,
+            "person_daily_records": self.person_daily_records,
             "resource_consumption_kg": self.resource_consumption_kg,
             "migration_summary": self.migration_summary,
             "final_resource_stock_kg": self.final_resource_stock_kg,
@@ -168,6 +188,7 @@ def run_survival_validation(
     population: PopulationState,
     days: int = 365,
     behavior_states: dict[str, Any] | None = None,
+    record_household_trace: bool = False,
 ) -> SurvivalRunResult:
     world = initial_world.clone()
     start_fingerprint = initial_world.initial_fingerprint
@@ -213,6 +234,9 @@ def run_survival_validation(
     water_method_counts: dict[str, int] = {}
     daily_harvest_details: list[dict[str, float | str]] = []
     time_account: dict[str, float] = defaultdict(float)
+    household_daily_records: list[dict[str, Any]] = []
+    person_daily_records: list[dict[str, Any]] = []
+    body_daily_summaries: list[dict[str, Any]] = []
     camps_after_day_one_selection: set[int] = set()
 
     for day in range(1, days + 1):
@@ -244,10 +268,15 @@ def run_survival_validation(
             water_method_counts,
             daily_harvest_details,
             time_account,
+            household_daily_records if record_household_trace else None,
+            person_daily_records if record_household_trace else None,
         )
         metrics.append(day_metric)
         if behavior_states:
             _update_body_after_day(runtimes, behavior_states, day)
+            body_daily_summaries.append(
+                _summarize_body_day(behavior_states, day)
+            )
 
     window_results = _summarize_windows(metrics)
     path_results = _evaluate_paths(
@@ -274,7 +303,7 @@ def run_survival_validation(
         time_account,
     )
     integration_diagnostics = _summarize_integration(
-        behavior_states, runtimes, metrics
+        behavior_states, runtimes, metrics, body_daily_summaries
     )
     migration_summary = {
         "households_that_migrated": sum(
@@ -324,6 +353,8 @@ def run_survival_validation(
         acquisition_paths=acquisition_paths,
         distribution_diagnostics=distribution_diagnostics,
         integration_diagnostics=integration_diagnostics,
+        household_daily_records=household_daily_records,
+        person_daily_records=person_daily_records,
         resource_consumption_kg={
             key: round(value, 3)
             for key, value in sorted(resource_consumption.items())
@@ -516,6 +547,8 @@ def _simulate_day(
     water_method_counts: dict[str, int],
     daily_harvest_details: list[dict[str, float | str]],
     time_account: dict[str, float],
+    household_daily_records: list[dict[str, Any]] | None,
+    person_daily_records: list[dict[str, Any]] | None,
 ) -> DayMetric:
     food_demand = 0.0
     food_acquired = 0.0
@@ -543,6 +576,7 @@ def _simulate_day(
 
     for household_id in household_order:
         runtime = runtimes[household_id]
+        household_category_hours: dict[str, float] = defaultdict(float)
         demand = sum(_daily_kcal_need(person) for person in runtime.members)
         litres = (
             len(runtime.members)
@@ -553,55 +587,104 @@ def _simulate_day(
             )
         )
         hours, care_hours, potential_hours = _available_labour_hours(runtime)
-        time_account["care"] += care_hours
+        runtime.last_potential_hours = potential_hours
+        runtime.last_care_hours = care_hours
         time_account["potential"] += potential_hours
         migration_hours = min(hours, runtime.migration_travel_debt_hours)
+        runtime.last_migration_hours = migration_hours
         hours -= migration_hours
         time_account["migration_travel"] += migration_hours
+        household_category_hours["migration_travel"] += migration_hours
         runtime.migration_travel_debt_hours = max(
             0.0, runtime.migration_travel_debt_hours - migration_hours
         )
         knowledge_hours = min(hours, runtime.knowledge_sharing_hours)
         hours -= knowledge_hours
         time_account["exploration_and_communication"] += knowledge_hours
+        household_category_hours["exploration_and_communication"] += (
+            knowledge_hours
+        )
         runtime.knowledge_sharing_hours = max(
             0.0, runtime.knowledge_sharing_hours - knowledge_hours
         )
+        runtime.last_hours_before_water = hours
+        average_thirst = (
+            mean(
+                state.body.thirst
+                for state in runtime.body_states.values()
+            )
+            if runtime.body_states
+            else 0.0
+        )
+        water_emergency = (
+            runtime.last_water_ratio < 0.8
+            or average_thirst >= 0.65
+            or (
+                hours <= 0.01
+                and care_hours > 0.0
+                and any(
+                    person.mobility >= 0.5
+                    and person.life_stage != "infant"
+                    for person in runtime.members
+                )
+            )
+        )
+        runtime.last_water_emergency = water_emergency
+        care_overlap_allowance = (
+            care_hours * 0.5 if water_emergency else 0.0
+        )
+        runtime.last_care_overlap_allowance = care_overlap_allowance
         water_hours, delivered_litres, water_method = _fetch_water(
             world,
             runtime,
             litres,
-            hours,
+            hours + care_overlap_allowance,
             day,
             water_distance_cache,
         )
         time_account["water"] += water_hours
-        hours -= water_hours
+        household_category_hours["water"] += water_hours
+        care_overlap_used = min(
+            care_hours,
+            max(0.0, water_hours - hours),
+        )
+        runtime.last_care_overlap_used = care_overlap_used
+        care_hours_remaining = care_hours - care_overlap_used
+        time_account["care"] += care_hours_remaining
+        hours = max(
+            0.0,
+            hours + care_overlap_used - water_hours,
+        )
 
         if day <= 3:
             task_hours = min(hours * 0.25, 2.0)
             _advance_shelter(world, runtime, task_hours)
             hours -= task_hours
             time_account["shelter"] += task_hours
+            household_category_hours["shelter"] += task_hours
         if day == 1:
             task_hours = min(hours * 0.15, 1.0)
             _advance_tools(world, runtime, task_hours)
             hours -= task_hours
             time_account["tools"] += task_hours
+            household_category_hours["tools"] += task_hours
         if day >= 2:
             task_hours = min(hours * 0.15, 1.0)
             _advance_fire(world, runtime, task_hours, day)
             hours -= task_hours
             time_account["fire"] += task_hours
+            household_category_hours["fire"] += task_hours
         if day > 3:
             if runtime.shelter_quality < 0.8:
                 task_hours = min(hours * 0.18, 1.2)
                 _advance_shelter(world, runtime, task_hours)
                 hours -= task_hours
                 time_account["shelter"] += task_hours
+                household_category_hours["shelter"] += task_hours
             maintenance = min(hours, 0.35)
             hours -= maintenance
             time_account["fire_maintenance"] += maintenance
+            household_category_hours["fire_maintenance"] += maintenance
 
         target_kcal = demand + max(
             0.0,
@@ -620,10 +703,24 @@ def _simulate_day(
             time_account,
         )
         hours -= food_hours_used
+        household_category_hours["food_harvest_and_processing"] += (
+            food_hours_used
+        )
         time_account["unallocated_or_rest"] += max(0.0, hours)
         runtime.last_labour_hours = (
-            potential_hours - care_hours - hours
+            potential_hours - care_hours_remaining - hours
         )
+        if person_daily_records is not None:
+            person_daily_records.extend(
+                _build_person_activity_records(
+                    runtime,
+                    day,
+                    potential_hours,
+                    care_hours,
+                    hours,
+                    household_category_hours,
+                )
+            )
         food_available_before_consumption = _store_kcal(world, runtime)
         consumed = _consume_food(world, runtime, demand)
         _spoil_food(runtime)
@@ -657,6 +754,37 @@ def _simulate_day(
         runtime.last_food_ratio = ratio
         runtime.last_consumed_kcal = consumed
         runtime.last_water_ratio = water_ratio
+        if household_daily_records is not None:
+            household_daily_records.append(
+                {
+                    "day": day,
+                    "household_id": runtime.household_id,
+                    "camp_cell_index": runtime.camp_cell_index,
+                    "water_method": runtime.last_water_method,
+                    "water_distance_km": runtime.last_water_distance_km,
+                    "mobile_people": runtime.last_mobile_people,
+                    "dependent_people": runtime.last_dependent_people,
+                    "direct_capacity_l": runtime.last_direct_capacity_l,
+                    "water_demand_l": litres,
+                    "water_delivered_l": delivered_litres,
+                    "water_ratio": water_ratio,
+                    "water_hours": water_hours,
+                    "migration_hours": runtime.last_migration_hours,
+                    "hours_before_water": runtime.last_hours_before_water,
+                    "potential_hours": runtime.last_potential_hours,
+                    "care_hours": runtime.last_care_hours,
+                    "water_emergency": runtime.last_water_emergency,
+                    "care_overlap_allowance": (
+                        runtime.last_care_overlap_allowance
+                    ),
+                    "care_overlap_used": runtime.last_care_overlap_used,
+                    "family_labour_hours": runtime.last_labour_hours,
+                    "vessel_capacity_l": runtime.water_container_capacity_l,
+                    "vessel_blocked_reason": runtime.water_vessel_blocked_reason,
+                    "food_ratio": ratio,
+                    "family_labour_hours": runtime.last_labour_hours,
+                }
+            )
         food_consumed += consumed
         household_ratio = consumed / demand if demand else 1.0
         household_food_ratios.append(household_ratio)
@@ -825,6 +953,7 @@ def _summarize_integration(
     behavior_states: dict[str, Any] | None,
     runtimes: dict[str, HouseholdRuntime],
     metrics: list[DayMetric],
+    daily_summaries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     if not behavior_states:
         return {
@@ -867,6 +996,230 @@ def _summarize_integration(
             for state in behavior_states.values()
         ),
         "days": len(metrics),
+        "minimum_allowed_work_capacity": 0.05,
+        "mean_work_capacity_day_scope": "final_day_population_mean",
+        "daily": daily_summaries,
+    }
+
+
+def _summarize_body_day(
+    behavior_states: dict[str, Any],
+    day: int,
+) -> dict[str, Any]:
+    capacities = [
+        state.body.work_capacity for state in behavior_states.values()
+    ]
+    return {
+        "day": day,
+        "mean_work_capacity": round(mean(capacities), 4),
+        "minimum_work_capacity": round(min(capacities), 4),
+        "people_with_hunger_at_cap": sum(
+            state.body.hunger >= 0.999 for state in behavior_states.values()
+        ),
+        "people_with_thirst_at_cap": sum(
+            state.body.thirst >= 0.999 for state in behavior_states.values()
+        ),
+    }
+
+
+def _build_person_activity_records(
+    runtime: HouseholdRuntime,
+    day: int,
+    potential_hours: float,
+    care_hours: float,
+    remaining_hours: float,
+    category_hours: dict[str, float],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    capacities: dict[str, float] = {}
+    for person in runtime.members:
+        if person.life_stage in {"infant", "toddler"}:
+            capacity = 0.0
+        elif person.life_stage == "child":
+            capacity = 1.6 if person.age_years >= 6 else 0.0
+        elif person.life_stage == "adolescent":
+            capacity = 3.5
+        elif person.life_stage == "adult":
+            capacity = 8.0
+        else:
+            capacity = 4.0
+        body_state = runtime.body_states.get(person.id)
+        body_factor = (
+            body_state.body.work_capacity if body_state is not None else 1.0
+        )
+        capacities[person.id] = (
+            capacity * person.mobility * body_factor
+        )
+    assigned = {person_id: 0.0 for person_id in capacities}
+    care_by_person: dict[str, float] = defaultdict(float)
+    for dependent in runtime.members:
+        care = {
+            "infant": 5.0,
+            "toddler": 3.0,
+            "child": 1.0,
+        }.get(dependent.life_stage, 0.0)
+        if care <= 0.0:
+            continue
+        caregivers = [
+            person
+            for person in runtime.members
+            if person.id in dependent.caregiver_ids
+            and capacities.get(person.id, 0.0) > 0.0
+        ]
+        if not caregivers:
+            caregivers = [
+                person
+                for person in runtime.members
+                if person.life_stage in {"adult", "elder"}
+            ][:1]
+        if not caregivers:
+            continue
+        share = care / len(caregivers)
+        for caregiver in caregivers:
+            actual = min(
+                share,
+                max(0.0, capacities[caregiver.id] - assigned[caregiver.id]),
+            )
+            care_by_person[caregiver.id] += actual
+            assigned[caregiver.id] += actual
+
+    eligible_by_category = {
+        "water": {
+            person.id
+            for person in runtime.members
+            if person.mobility >= 0.5
+            and person.life_stage not in {"infant"}
+        },
+        "food_harvest_and_processing": {
+            person.id
+            for person in runtime.members
+            if person.life_stage
+            in {"child", "adolescent", "adult", "elder"}
+        },
+        "shelter": {
+            person.id
+            for person in runtime.members
+            if person.life_stage in {"adolescent", "adult", "elder"}
+        },
+        "fire": {
+            person.id
+            for person in runtime.members
+            if any(
+                skill["id"] in {"fire_friction", "fire_keeping"}
+                for skill in person.skills
+            )
+        },
+        "tools": {
+            person.id
+            for person in runtime.members
+            if any(
+                skill["id"] in {"stone_tool_making", "wood_working"}
+                for skill in person.skills
+            )
+        },
+    }
+    category_assignments: dict[str, dict[str, float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
+    for category, hours in category_hours.items():
+        eligible = eligible_by_category.get(
+            category,
+            {
+                person.id
+                for person in runtime.members
+                if capacities.get(person.id, 0.0) > 0.0
+            },
+        )
+        if not eligible:
+            eligible = {
+                person.id
+                for person in runtime.members
+                if person.life_stage in {"adult", "elder"}
+            }
+        capacity_total = sum(
+            max(0.0, capacities[person_id] - assigned[person_id])
+            for person_id in eligible
+        )
+        if capacity_total <= 0.0:
+            continue
+        for person_id in sorted(eligible):
+            available = max(
+                0.0, capacities[person_id] - assigned[person_id]
+            )
+            if available <= 0.0:
+                continue
+            share = hours * available / capacity_total
+            category_assignments[category][person_id] += share
+            assigned[person_id] += share
+
+    for person in runtime.members:
+        cursor = 6 * 60
+        care = care_by_person.get(person.id, 0.0)
+        if care > 0.0:
+            records.append(
+                _activity_record(
+                    day,
+                    person.id,
+                    "care",
+                    cursor,
+                    care,
+                    "rule_based_dependency_assignment",
+                    runtime.camp_cell_index,
+                )
+            )
+            cursor += int(round(care * 60))
+        for category in sorted(category_hours):
+            hours = category_assignments[category].get(person.id, 0.0)
+            if hours <= 0.0:
+                continue
+            records.append(
+                _activity_record(
+                    day,
+                    person.id,
+                    category,
+                    cursor,
+                    hours,
+                    "state_limited_household_task_allocation",
+                    runtime.camp_cell_index,
+                )
+            )
+            cursor += int(round(hours * 60))
+        rest_hours = max(0.0, capacities[person.id] - assigned[person.id])
+        if rest_hours > 0.0:
+            records.append(
+                _activity_record(
+                    day,
+                    person.id,
+                    "rest_or_unused_capacity",
+                    cursor,
+                    rest_hours,
+                    "remaining_personal_capacity",
+                    runtime.camp_cell_index,
+                )
+            )
+    return records
+
+
+def _activity_record(
+    day: int,
+    person_id: str,
+    category: str,
+    start_minute: int,
+    hours: float,
+    assignment_source: str,
+    location_cell: int,
+) -> dict[str, Any]:
+    return {
+        "day": day,
+        "person_id": person_id,
+        "category": category,
+        "start_minute": start_minute,
+        "end_minute": min(24 * 60, start_minute + int(round(hours * 60))),
+        "hours": round(hours, 6),
+        "assignment_source": assignment_source,
+        "location_cell": location_cell,
+        "location_precision": "household_camp_only",
+        "eligibility_checked": True,
     }
 
 
@@ -943,20 +1296,33 @@ def _fetch_water(
         for person in runtime.members
         if person not in mobile_people
     )
+    runtime.last_water_distance_km = distance_km
+    runtime.last_mobile_people = len(mobile_people)
+    runtime.last_dependent_people = dependent_count
     if day == 1:
         escort_trips = math.ceil(dependent_count / 2.0)
+        drinkers = len(mobile_people) + min(
+            dependent_count, max(0, len(mobile_people) // 2)
+        )
+        runtime.last_direct_capacity_l = drinkers * 3.0
         required_hours = (
             max(1, len(mobile_people)) * (_distance_walk_hours(distance_km) + 0.2)
             + escort_trips * _distance_walk_hours(distance_km)
         )
         method = "travel_to_source_and_drink_without_container"
         if required_hours <= available_hours:
+            runtime.last_water_method = method
+            runtime.last_water_hours = required_hours
+            runtime.last_water_delivered_l = litres_needed
             world.water_volume_m3 = max(
                 0.0, world.water_volume_m3 - litres_needed / 1000.0
             )
             return required_hours, litres_needed, method
         fraction = available_hours / required_hours if required_hours else 1.0
         delivered = litres_needed * max(0.0, min(1.0, fraction))
+        runtime.last_water_method = method
+        runtime.last_water_hours = available_hours
+        runtime.last_water_delivered_l = delivered
         world.water_volume_m3 = max(
             0.0, world.water_volume_m3 - delivered / 1000.0
         )
@@ -1059,7 +1425,8 @@ def _fetch_water(
         drinkers = len(mobile_people) + min(
             dependent_count, max(0, len(mobile_people) // 2)
         )
-        direct_capacity = drinkers * 1.8
+        direct_capacity = drinkers * 3.0
+        runtime.last_direct_capacity_l = direct_capacity
         required_hours = (
             max(1, len(mobile_people))
             * (_distance_walk_hours(distance_km) + 0.2)
@@ -1068,12 +1435,18 @@ def _fetch_water(
         )
         if required_hours <= available_hours:
             delivered = min(litres_needed, direct_capacity)
+            runtime.last_water_method = "travel_to_source_without_vessel"
+            runtime.last_water_hours = required_hours
+            runtime.last_water_delivered_l = delivered
             world.water_volume_m3 = max(
                 0.0, world.water_volume_m3 - delivered / 1000.0
             )
             return required_hours, delivered, "travel_to_source_without_vessel"
         fraction = available_hours / required_hours if required_hours else 1.0
         delivered = min(litres_needed, direct_capacity * fraction)
+        runtime.last_water_method = "travel_to_source_without_vessel"
+        runtime.last_water_hours = available_hours
+        runtime.last_water_delivered_l = delivered
         world.water_volume_m3 = max(
             0.0, world.water_volume_m3 - delivered / 1000.0
         )
@@ -1086,6 +1459,9 @@ def _fetch_water(
     required_hours = trips * hours_per_trip
     if required_hours <= available_hours:
         withdrawn = trips * carry_capacity
+        runtime.last_water_method = "carried_in_expedient_vessels"
+        runtime.last_water_hours = required_hours
+        runtime.last_water_delivered_l = litres_needed
         world.water_volume_m3 = max(
             0.0, world.water_volume_m3 - withdrawn / 1000.0
         )
@@ -1095,6 +1471,9 @@ def _fetch_water(
     delivered = min(
         litres_needed, completed_trips * effective_capacity
     )
+    runtime.last_water_method = "carried_in_expedient_vessels"
+    runtime.last_water_hours = available_hours
+    runtime.last_water_delivered_l = delivered
     withdrawn = completed_trips * carry_capacity
     world.water_volume_m3 = max(
         0.0, world.water_volume_m3 - withdrawn / 1000.0
@@ -1109,11 +1488,13 @@ def _advance_shelter(
 ) -> None:
     if runtime.shelter_quality >= 1.0 or hours <= 0.0:
         return
+    runtime.shelter_attempt_hours += hours
     wood = _nearest_material_kg(world, runtime, "wood", hours * 3.0)
     fiber = _nearest_material_kg(
         world, runtime, "fiber", hours * 0.7
     )
     if wood <= 0.0:
+        runtime.shelter_material_failure_days += 1
         return
     material_factor = min(1.0, wood / 12.0) * min(1.0, fiber / 2.0 + 0.35)
     runtime.shelter_quality = min(
@@ -2005,6 +2386,36 @@ def _build_acquisition_paths(
             "shelter_completed_day",
             int(baseline["start_day_of_year"]),
         ),
+        "shelter_evidence": {
+            "attempt_hours": round(
+                sum(
+                    runtime.shelter_attempt_hours
+                    for runtime in runtimes.values()
+                ),
+                6,
+            ),
+            "material_failure_days": sum(
+                runtime.shelter_material_failure_days
+                for runtime in runtimes.values()
+            ),
+            "mean_final_quality": round(
+                mean(
+                    runtime.shelter_quality
+                    for runtime in runtimes.values()
+                ),
+                4,
+            ),
+            "households_with_partial_cover": sum(
+                runtime.shelter_quality >= 0.25
+                for runtime in runtimes.values()
+            ),
+            "people_with_partial_cover": sum(
+                len(runtime.members)
+                for runtime in runtimes.values()
+                if runtime.shelter_quality >= 0.25
+            ),
+            "progress_is_retained": True,
+        },
         "fire": _completion_summary(
             runtimes,
             "fire_first_success_day",

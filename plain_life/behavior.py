@@ -18,6 +18,7 @@ KNOWLEDGE_STAGES = (
     "independent",
     "can_teach",
 )
+MIN_WORK_CAPACITY = 0.05
 
 
 @dataclass
@@ -61,17 +62,23 @@ class BodyState:
         metabolic_stress = max(
             0.0, min(1.0, -self.energy_balance_kcal / 15000.0)
         )
+        metabolic_penalty = max(
+            0.15 * self.hunger,
+            0.3 * metabolic_stress,
+        )
         capacity = (
             1.0
-            - 0.42 * self.hunger
-            - 0.38 * self.thirst
-            - 0.28 * self.fatigue
-            - 0.22 * self.pain
-            - 0.35 * self.injury
-            - 0.015 * self.sleep_debt_hours
-            - 0.3 * metabolic_stress
+            - metabolic_penalty
+            - 0.34 * self.thirst
+            - 0.25 * self.fatigue
+            - 0.18 * self.pain
+            - 0.3 * self.injury
+            - 0.012 * self.sleep_debt_hours
         )
-        return max(0.05, min(1.0, capacity * self.mobility))
+        return max(
+            MIN_WORK_CAPACITY,
+            min(1.0, capacity * self.mobility),
+        )
 
     @property
     def care_dependency(self) -> float:
@@ -594,7 +601,9 @@ def _scenario_caregiver_outing(
         "care_reply",
         {
             "accepted": accepted,
-            "actual_takeover": accepted,
+            "future_commitment": accepted,
+            "actual_takeover": False,
+            "scheduled_start_minute": 14 * 60,
         },
         decision_explanation_summary=(
             "I can take over care."
@@ -602,6 +611,28 @@ def _scenario_caregiver_outing(
             else "I cannot take over care."
         ),
     )
+    if accepted:
+        recorder.record(
+            1,
+            14 * 60,
+            alternative,
+            "care_takeover_started",
+            {
+                "dependent_id": infant.id,
+                "replaces_future_commitment": True,
+            },
+            decision_explanation_summary="I am taking over care now.",
+        )
+        recorder.record(
+            1,
+            17 * 60,
+            alternative,
+            "care_takeover_completed",
+            {
+                "dependent_id": infant.id,
+                "actual_takeover": True,
+            },
+        )
     return ScenarioResult(
         scenario_id="caregiver_outing",
         title="照护者外出找食物",
@@ -621,6 +652,18 @@ def _scenario_caregiver_outing(
                 )
             ) is False,
             "alternative_or_abandonment_path_explicit": accepted,
+            "future_acceptance_distinct_from_takeover": any(
+                event.event_type == "care_reply"
+                and event.facts["actual_takeover"] is False
+                for event in recorder.events
+            )
+            and (
+                not accepted
+                or any(
+                    event.event_type == "care_takeover_started"
+                    for event in recorder.events
+                )
+            ),
             "resume_capacity_is_reduced": caregiver_state.body.work_capacity < 1.0,
         },
         decisions=[decision],

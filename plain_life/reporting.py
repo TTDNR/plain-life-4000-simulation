@@ -379,6 +379,17 @@ def render_survival_report(
             f"`{run_result.acquisition_paths['shelter']['median_completion_day']}`；"
             f"世界年内第 "
             f"`{run_result.acquisition_paths['shelter']['median_day_of_year']}` 日。",
+            f"- 遮蔽累计尝试："
+            f"`{run_result.acquisition_paths['shelter_evidence']['attempt_hours']}` 家庭小时；"
+            f"材料失败："
+            f"`{run_result.acquisition_paths['shelter_evidence']['material_failure_days']}` 家庭日；"
+            f"平均最终质量："
+            f"`{run_result.acquisition_paths['shelter_evidence']['mean_final_quality']}`。",
+            f"- 达到部分保护阈值的家庭："
+            f"`{run_result.acquisition_paths['shelter_evidence']['households_with_partial_cover']}`，"
+            f"覆盖人数："
+            f"`{run_result.acquisition_paths['shelter_evidence']['people_with_partial_cover']}`；"
+            "未完成进度会保留，不会在换日时丢失。",
             f"- 火首次成功家庭："
             f"`{run_result.acquisition_paths['fire']['households_completed']}`，"
             f"中位成功日（投放后）："
