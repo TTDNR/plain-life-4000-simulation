@@ -137,6 +137,8 @@ class BehaviorState:
     tasks: list[Task] = field(default_factory=list)
     possessions_kcal: float = 0.0
     food_items: dict[str, dict[str, Any]] = field(default_factory=dict)
+    food_claim_weight: float = 1.0
+    sharing_disposition: float = 0.8
     fire_quality: float = 0.0
     shelter_quality: float = 0.0
     daily_kcal_need: float = 2100.0
@@ -303,9 +305,17 @@ class EventRecorder:
         )
 
 
-def run_behavior_scenarios(root: Path) -> dict[str, Any]:
+def run_behavior_scenarios(
+    root: Path,
+    version: str = "v4",
+) -> dict[str, Any]:
     baseline = load_environment_baseline(
-        root / "data" / "phase1" / "versions" / "v3" / "environment_baseline.json"
+        root
+        / "data"
+        / "phase1"
+        / "versions"
+        / version
+        / "environment_baseline.json"
     )
     world = generate_environment(baseline)
     population = generate_population(int(baseline.raw["seed"]), 4000)
@@ -321,7 +331,7 @@ def run_behavior_scenarios(root: Path) -> dict[str, Any]:
     ]
     contrast_cases = _run_contrast_cases(world, population)
     return {
-        "version": "v3",
+        "version": version,
         "scenarios": [result.to_dict() for result in results],
         "contrast_cases": contrast_cases,
         "all_passed": (
@@ -333,7 +343,7 @@ def run_behavior_scenarios(root: Path) -> dict[str, Any]:
 
 def render_behavior_report(result: dict[str, Any]) -> str:
     lines = [
-        "# v3 人物与家庭短场景报告",
+        f"# {result['version']} 人物与家庭短场景报告",
         "",
         "本报告只验证过程一致性、时间与身体代价、知识来源和可追溯性。"
         "它不是唯一正确结局，也不代表完整人类行为模型。",
@@ -1621,6 +1631,16 @@ def _state_for_person(
     hunger: float = 0.25,
     fatigue: float = 0.2,
 ) -> BehaviorState:
+    variation = _stable_fraction(person.id)
+    if person.life_stage in {"infant", "toddler", "child"}:
+        claim_weight = 1.1
+        sharing_disposition = 1.0
+    elif person.life_stage == "elder":
+        claim_weight = 0.9 + 0.15 * variation
+        sharing_disposition = 0.65 + 0.3 * variation
+    else:
+        claim_weight = 0.85 + 0.3 * variation
+        sharing_disposition = 0.55 + 0.4 * variation
     return BehaviorState(
         person_id=person.id,
         age_years=person.age_years,
@@ -1642,6 +1662,8 @@ def _state_for_person(
         attachments={},
         obligations={},
         knowledge={},
+        food_claim_weight=round(claim_weight, 4),
+        sharing_disposition=round(sharing_disposition, 4),
         daily_kcal_need=_daily_kcal_need(person),
     )
 
@@ -1746,3 +1768,10 @@ def _render_person_replay(
         ),
         "summary_generated": True,
     }
+
+
+def _stable_fraction(label: str) -> float:
+    value = 0
+    for char in label:
+        value = (value * 131 + ord(char)) % 1_000_000_007
+    return value / 1_000_000_007

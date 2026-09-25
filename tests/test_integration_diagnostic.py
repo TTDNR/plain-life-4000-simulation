@@ -25,11 +25,27 @@ class IntegrationDiagnosticTests(unittest.TestCase):
             self.assertLessEqual(abs(ledger["closure_error_kg"]), 0.001)
             self.assertTrue(ledger["non_negative"])
 
-    def test_integration_does_not_force_social_events(self) -> None:
-        social = self.result["social_actions"]
-        self.assertEqual(0, social["interhousehold_food_requests"])
-        self.assertEqual(0, social["teaching_events"])
-        self.assertEqual(0, social["temporary_cohabitation_events"])
+    def test_integration_connects_social_actions_without_global_search(self) -> None:
+        social = self.result["social_action_funnel"]
+        self.assertEqual(
+            "connected_to_integrated_loop", social["classification"]
+        )
+        request_count = sum(
+            social[aid_type]["request_sent"]
+            for aid_type in (
+                "water",
+                "food",
+                "fire",
+                "care",
+                "shelter",
+                "teaching",
+            )
+        )
+        self.assertGreater(request_count, 0)
+        for record in self.result["social_action_records"]:
+            distance = record.get("distance_km")
+            if distance is not None:
+                self.assertLessEqual(distance, 1.0)
 
     def test_body_feedback_is_enabled_and_bounded(self) -> None:
         integration = self.result["integration"]

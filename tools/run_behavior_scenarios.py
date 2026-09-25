@@ -15,16 +15,22 @@ from plain_life.behavior import render_behavior_report, run_behavior_scenarios
 
 
 def main() -> int:
-    result = run_behavior_scenarios(ROOT)
+    version = sys.argv[1] if len(sys.argv) > 1 else "v4"
+    result = run_behavior_scenarios(ROOT, version=version)
     docs_path = (
-        ROOT / "docs" / "phase1" / "versions" / "v3" / "BEHAVIOR_SCENARIOS.md"
+        ROOT
+        / "docs"
+        / "phase1"
+        / "versions"
+        / version
+        / "BEHAVIOR_SCENARIOS.md"
     )
     artifacts_path = (
         ROOT
         / "artifacts"
         / "phase1"
         / "versions"
-        / "v3"
+        / version
         / "behavior_scenarios.json"
     )
     docs_path.write_text(render_behavior_report(result), encoding="utf-8")

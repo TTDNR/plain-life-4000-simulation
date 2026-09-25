@@ -2,24 +2,25 @@
 
 ## 当前版本
 
-`v3` 修正版，门禁 `BLOCKED`，暂不验收，不启动正式长期模拟。
+`v4` 基础行为接入诊断版，暂不验收，不启动正式长期模拟。
 
-当前审计包含 12 个阻断项：
+当前状态：
 
-- 四个时间窗全部失败。
-- 饮水、食物、遮蔽、火和稳定供给路径失败。
-- 年度结果仍是固定人口需求压力测试，没有动态身体后果。
-- 家庭分配和跨家庭请求回应只在短场景通过，尚未接入年度人口。
+- 家庭分配、局部求助、火种、照护、住所和基础教学已接入七天循环。
+- 七天食物摄入仍由约 49% 降至约 5%；局部资源耗尽和无人掌握加工原因持续上升。
+- 社会求助已产生真实请求、拒绝、接受和交付；住所请求因未满足触发条件为零。
+- 有 125 个家庭日低于 80% 饮水需求，完整遮蔽保护仍为零。
+- 第 6 天触发内部诊断警戒线。
+- 正式长期模拟继续暂停。
 
 完整机器结果位于版本目录：
 
 - [版本索引](versions/README.md)
-- [v3 环境资源清单](versions/v3/ENVIRONMENT_RESOURCE_INVENTORY.md)
-- [v3 开局生存核验](versions/v3/OPENING_SURVIVAL_REVIEW.md)
-- [v3 初始化一致性检查](versions/v3/INITIALIZATION_CONSISTENCY_REVIEW.md)
-- [v3 人物与家庭短场景](versions/v3/BEHAVIOR_SCENARIOS.md)
-- [v3 七天整合诊断](versions/v3/SEVEN_DAY_INTEGRATION.md)
-- [v3 变更记录](versions/v3/CHANGES.md)
+- [v4 人物与家庭短场景](versions/v4/BEHAVIOR_SCENARIOS.md)
+- [v4 七天整合诊断](versions/v4/SEVEN_DAY_INTEGRATION.md)
+- [v4 变更记录](versions/v4/CHANGES.md)
+- [v4 审计](versions/v4/PHASE1_AUDIT.md)
+- [v3 年度固定压力测试](versions/v3/OPENING_SURVIVAL_REVIEW.md)
 
 ## v1 保留
 
@@ -31,7 +32,8 @@ v1 的秋季温带基线和失败结果未被覆盖，存放于
 
 ```powershell
 py -3.12 -m unittest discover -s tests -v
-py -3.12 tools\run_behavior_scenarios.py
+py -3.12 tools\run_behavior_scenarios.py v4
+py -3.12 tools\run_integration_diagnostic.py v4
 py -3.12 tools\run_phase1.py --version v3 --days 365 --allow-failed
 ```
 

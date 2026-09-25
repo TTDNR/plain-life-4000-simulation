@@ -2,9 +2,8 @@
 
 用于模拟 4000 个人类单位在平原环境中生活的独立项目。
 
-当前状态：v1、v2 结果已冻结；v3 已修正报表、资源季节损失和水火路径，并完成
-第一批个人行为与第二批基础家庭行为短场景。v3 年度压力测试仍为 `BLOCKED`，
-尚未批准启动正式长期模拟。
+当前状态：v1、v2、v3 结果已冻结；v4 已把家庭分配、局部求助和基础教学接入
+七天动态循环，并建立逐日食物链定位。v4 仅为诊断，尚未批准正式长期模拟。
 
 ## 项目目标
 
@@ -42,10 +41,10 @@
 
 ```powershell
 py -3.12 -m unittest discover -s tests -v
-py -3.12 tools\run_behavior_scenarios.py
-py -3.12 tools\run_integration_diagnostic.py
+py -3.12 tools\run_behavior_scenarios.py v4
+py -3.12 tools\run_integration_diagnostic.py v4
 py -3.12 tools\run_phase1.py --version v3 --days 365
 ```
 
-最后一条命令运行 v3 完整年度压力测试并生成三项报告。门禁未通过时返回非零退出码。
+最后一条命令只用于复现 v3 年度固定人口压力测试，不能替代 v4 动态诊断。
 `--allow-failed` 只用于保留失败报告，不能作为正式世界历史或长期模拟许可。

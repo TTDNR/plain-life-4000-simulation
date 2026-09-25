@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -12,9 +13,17 @@ from .population import generate_population
 from .survival import run_survival_validation
 
 
-def run_seven_day_integration(root: Path) -> dict[str, Any]:
+def run_seven_day_integration(
+    root: Path,
+    version: str = "v4",
+) -> dict[str, Any]:
     baseline = load_environment_baseline(
-        root / "data" / "phase1" / "versions" / "v3" / "environment_baseline.json"
+        root
+        / "data"
+        / "phase1"
+        / "versions"
+        / version
+        / "environment_baseline.json"
     )
     world = generate_environment(baseline)
     population = generate_population(int(baseline.raw["seed"]), 4000)
@@ -23,17 +32,25 @@ def run_seven_day_integration(root: Path) -> dict[str, Any]:
         for person in population.people
     }
     _seed_social_state(population, behavior_states)
+    initial_dynamic_capacity = sum(
+        state.body.work_capacity for state in behavior_states.values()
+    ) / len(behavior_states)
+    fixed_behavior_states = copy.deepcopy(behavior_states)
     run = run_survival_validation(
         world,
         population,
         days=7,
         behavior_states=behavior_states,
         record_household_trace=True,
+        enable_social_exchange=True,
     )
     fixed_control = run_survival_validation(
         world,
         population,
         days=7,
+        behavior_states=fixed_behavior_states,
+        enable_social_exchange=True,
+        apply_body_feedback=False,
     )
     integration = run.integration_diagnostics
     if integration.get("daily"):
@@ -50,7 +67,7 @@ def run_seven_day_integration(root: Path) -> dict[str, Any]:
             None,
         )
     return {
-        "version": "v3",
+        "version": version,
         "diagnostic_type": "seven_day_integrated_opening_diagnostic",
         "formal_history": False,
         "long_term_conclusion_allowed": False,
@@ -67,10 +84,22 @@ def run_seven_day_integration(root: Path) -> dict[str, Any]:
         },
         "fire": run.acquisition_paths["fire_attempts"],
         "shelter": run.acquisition_paths["shelter"],
+        "migration_summary": run.migration_summary,
         "care_and_shelter": {
             "dependent_people": sum(
                 person.life_stage in {"infant", "toddler", "child"}
                 for person in population.people
+            ),
+            "water_nonmobile_people": sum(
+                person.life_stage in {"infant", "toddler"}
+                or person.mobility < 0.5
+                for person in population.people
+            ),
+            "water_dependency_definition": (
+                "cannot safely reach water alone because of age or mobility"
+            ),
+            "care_dependency_definition": (
+                "infant, toddler, or child requiring household care"
             ),
             "dependent_people_with_declared_caregiver": sum(
                 person.life_stage in {"infant", "toddler", "child"}
@@ -103,6 +132,10 @@ def run_seven_day_integration(root: Path) -> dict[str, Any]:
         "food_annual": run.acquisition_paths["food"],
         "resource_ledger": run.resource_ledger,
         "daily_metrics": [asdict(metric) for metric in run.metrics],
+        "person_food_records": run.person_food_records,
+        "food_intake_summary": _food_intake_summary(
+            run.person_food_records
+        ),
         "household_daily_records": run.household_daily_records,
         "person_daily_records": run.person_daily_records,
         "personal_time_audit": _personal_time_audit(
@@ -111,24 +144,24 @@ def run_seven_day_integration(root: Path) -> dict[str, Any]:
         "water_diagnosis": _water_diagnosis(run.household_daily_records),
         "body_fixed_control": {
             "mode": "fixed_initial_work_capacity_control",
+            "initial_dynamic_mean_capacity": round(
+                initial_dynamic_capacity, 4
+            ),
+            "initial_fixed_mean_capacity": 1.0,
+            "same_initial_world": True,
+            "same_initial_population": True,
+            "same_social_rules": True,
             "daily_metrics": [asdict(metric) for metric in fixed_control.metrics],
             "note": (
                 "Diagnostic counterfactual only; it does not represent a "
                 "proposed behavior."
             ),
         },
-        "social_actions": {
-            "interhousehold_food_requests": 0,
-            "completed_food_transfers": 0,
-            "teaching_events": 0,
-            "temporary_cohabitation_events": 0,
-            "note": (
-                "No cross-household exchange, teaching, or cohabitation was "
-                "forced. Zero means the integrated rule set did not trigger them."
-            ),
-        },
+        "social_actions": run.social_action_stats,
+        "social_action_records": run.social_action_records,
         "social_action_funnel": _social_action_funnel(
-            run.household_daily_records
+            run.household_daily_records,
+            run.social_action_stats,
         ),
         "failure_reasons": _failure_reason_summary(
             run.acquisition_paths, run.metrics
@@ -145,7 +178,7 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
         metric["water_ratio"] < 0.8 for metric in result["daily_metrics"]
     )
     lines = [
-        "# v3 七天开局整合诊断",
+        f"# {result['version']} 七天开局整合诊断",
         "",
         "这是 4000 人世界副本上的连续 7 天诊断，不是正式历史，也不能证明长期生存能力。",
         "",
@@ -154,7 +187,10 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
         "- 行动在每个模拟日由当前身体、照护、资源和已探索信息产生，没有按日期脚本触发事件。",
         "- 身体劳动能力限制当日可用时间；实际摄入和缺水在当天结束后更新身体。",
         "- 食物、水、材料和劳动都从同一个世界副本扣除。",
-        "- 没有发生跨家庭交换、教学或同居时记录为零，不为演示功能强制触发。",
+        "- 跨家庭请求只面向 1 公里内、最多 6 个实际可接触家庭；不会全地图寻找救援者。",
+        "- 求助、回应、拒绝和交付分别记录，零事件必须由阶段原因解释。",
+        "- 家庭食物按个人需求与当前主张权重分配，再由明确进食事件更新身体；"
+        "拒绝和协商仍只在短场景验证，未作为统一年度人格规则。",
         "",
         "## 七天结果",
         "",
@@ -210,6 +246,9 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             "",
             "同一小时只进入一个类别；时间账闭合误差为 "
             f"`{result['time_account_hours']['closure_error_hours']}` 小时。",
+            f"- 尚待执行的社交往返："
+            f"`{result['time_account_hours']['pending_social_travel_hours']}` 小时；"
+            "它作为未来承诺单独保留，没有冒充已经完成的活动。",
             "",
             "## 实际食物摄入",
             "",
@@ -229,6 +268,68 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
         [
             "",
             "摄入量由家庭实际吃下触发，不是分配量或仓库存量。",
+            "",
+            "| 日期 | 摄入低于 80% 需求人数 | 平均摄入/需求 | 最低个人摄入/需求 |",
+            "| ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for item in result["food_intake_summary"]["daily"]:
+        lines.append(
+            f"| {item['day']} | {item['below_80_percent_people']} | "
+            f"{item['mean_intake_ratio']} | {item['minimum_intake_ratio']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "最低摄入个人样本：",
+            "",
+            "| 日 | 人物 | 家庭 | 摄入 kcal | 需求 kcal | 比例 |",
+            "| ---: | --- | --- | ---: | ---: | ---: |",
+        ]
+    )
+    for item in result["food_intake_summary"]["lowest_examples"]:
+        lines.append(
+            f"| {item['day']} | `{item['person_id']}` | "
+            f"`{item['household_id']}` | {item['intake_kcal']} | "
+            f"{item['effective_need_kcal']} | {item['intake_ratio']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## 每日食物获取链",
+            "",
+            "| 日期 | 已知可获取 kcal | 获取原料 kg | 可食食物 kg | "
+            "日末库存 kcal | 资源切换 | 未成熟/过季 | 无人会做 | 局部耗尽 | "
+            "无时间 | 加工失败 |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for metric in result["daily_metrics"]:
+        obstacles = metric["food_obstacles"]
+        lines.append(
+            f"| {metric['day']} | {metric['known_available_food_kcal']} | "
+            f"{metric['stock_kg_acquired']} | "
+            f"{metric['edible_food_kg_acquired']} | "
+            f"{metric['food_store_end_kcal']} | "
+            f"{metric['food_resource_switches']} | "
+            f"{obstacles.get('not_mature_or_out_of_season', 0)} | "
+            f"{obstacles.get('no_household_member_with_knowledge', 0)} | "
+            f"{obstacles.get('local_stock_depleted', 0)} | "
+            f"{obstacles.get('no_time_after_travel', 0)} | "
+            f"{obstacles.get('processing_failed', 0)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "- 获取原料和可食食物分开记录；加工失败只减少可食产量，不能伪装成已吃下。",
+            "- 受阻原因按日保存，不能用单一“缺食”解释。",
+            f"- 资源切换事件："
+            f"`{sum(item['food_resource_switches'] for item in result['daily_metrics'])}`；"
+            f"迁移家庭："
+            f"`{result['migration_summary']['households_that_migrated']}`；"
+            f"跨家庭求助请求："
+            f"`{sum(result['social_action_funnel'][key]['request_sent'] for key in ('water', 'food', 'fire', 'care', 'shelter', 'teaching'))}`。",
+            "- 这些数量用于确认人物会切换资源、迁移或求助，较差的后续收益仍必须单独解释。",
             "",
             "## 资源收支",
             "",
@@ -252,6 +353,9 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             "## 照护与遮蔽覆盖",
             "",
             f"- 依赖人口：`{care['dependent_people']}`。",
+            f"- 不能自行到水边的人数：`{care['water_nonmobile_people']}`。",
+            f"- 取水依赖定义：{care['water_dependency_definition']}。",
+            f"- 照护依赖定义：{care['care_dependency_definition']}。",
             f"- 有明确照护者引用的依赖人口："
             f"`{care['dependent_people_with_declared_caregiver']}`。",
             f"- 七天照护占用：`{care['care_hours']}` 家庭小时。",
@@ -328,8 +432,26 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             "- 照护记录使用实际照护者 ID 和时间段；接受未来安排不等于已经完成接手。",
             "- `potential` 指身体修正后的可劳动小时，不是全部清醒时间；"
             "剩余部分进入休息或未使用能力。",
-            "- 活动记录目前只到家庭营地位置，尚未保存每个资源格的实际执行位置，"
-            "位置精度仍待提高。",
+            f"- 记录到实际资源格或水源格的活动："
+            f"`{result['personal_time_audit']['records_with_activity_site']}`；"
+            f"仅记录到家庭营地的活动："
+            f"`{result['personal_time_audit']['records_with_camp_only']}`。",
+            "",
+            "### 代表性行动链",
+            "",
+            "| 日 | 人物 | 家庭 | 活动 | 开始 | 结束 | 地点单元 | 说明 |",
+            "| ---: | --- | --- | --- | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for action in result["personal_time_audit"]["representative_actions"]:
+        lines.append(
+            f"| {action['day']} | `{action['person_id']}` | "
+            f"`{action['household_id']}` | `{action['category']}` | "
+            f"{action['start_minute']} | {action['end_minute']} | "
+            f"{action['location_cell']} | `{action['detail']}` |"
+        )
+    lines.extend(
+        [
             "",
             "## 动态身体对照",
             "",
@@ -353,6 +475,11 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
         [
             "",
             "- 固定能力对照仅用于拆分身体反馈放大效应，不代表现实方案。",
+            f"- 两组使用同一世界、人口、行动和求助规则；动态组初始平均能力 "
+            f"`{result['body_fixed_control']['initial_dynamic_mean_capacity']}`，"
+            f"固定组为 "
+            f"`{result['body_fixed_control']['initial_fixed_mean_capacity']}`，"
+            "因此第一天不同来自初始能力输入，而不是地图差异。",
             f"- 动态结果高于固定对照的天数："
             f"`{sum(value > 0.001 for value in food_differences)}/7`；"
             f"低于固定对照的天数："
@@ -362,18 +489,30 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             "",
             "## 社会行为接入状态",
             "",
-            "| 阶段 | 跨家庭互助 | 教学 | 临时同住 |",
-            "| --- | --- | --- | --- |",
-            f"| 需求发生 | `{result['social_action_funnel']['need_events']}` | "
-            "`not_measured` | `not_measured` |",
-            "| 察觉可接触对象 | `not_connected` | `not_connected` | `not_connected` |",
-            "| 考虑求助 | `not_connected` | `not_connected` | `not_connected` |",
-            "| 发出请求 | `0: not_connected` | `0: not_connected` | `0: not_connected` |",
-            "| 得到回应 | `0: not_connected` | `0: not_connected` | `0: not_connected` |",
-            "| 实际执行 | `0: not_connected` | `0: not_connected` | `0: not_connected` |",
+            f"总求助需求事件：`{result['social_action_funnel']['total_need_events']}`。",
             "",
-            "- 这组事件没有接入七天整合循环；零事件不能解释为人物选择不合作。",
-            "- 只有短场景验证了请求、回应、拒绝和部分执行，尚未进入 4000 人统一调度。",
+            "| 需求 | 发生需求 | 接触机会 | 请求 | 回应 | 接受 | 拒绝 | 执行 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for aid_type in ("water", "food", "fire", "care", "shelter", "teaching"):
+        item = result["social_action_funnel"][aid_type]
+        lines.append(
+            f"| `{aid_type}` | {item['need_events']} | "
+            f"{item['contact_opportunity']} | {item['request_sent']} | "
+            f"{item['response_received']} | {item['accepted']} | "
+            f"{item['rejected']} | {item['executed']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "- 接触对象只从 1 公里内、最多 6 个可达家庭中选择，不做全地图最优匹配。",
+            "- 未继续的原因汇总保存在机器结果，区分无人可就近求助、无资源、被拒绝和执行失败。",
+            "- 照护请求的接受与次日实际使用分开；整合表不把未来承诺记作已经执行。",
+            "- 住所请求为零表示没有家庭同时满足“雨天”和“遮蔽不足”两个触发条件，"
+            "不是住所行为未接入。",
+            "- 教学接受后没有执行，原因是教师或学习者状态不满足；该失败保留，"
+            "不为展示功能强制成功。",
             "",
             "## 模型适用边界",
             "",
@@ -444,7 +583,7 @@ def _failure_reason_summary(
 def _personal_time_audit(
     records: list[dict[str, Any]],
     population: Any,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     by_person_day: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for record in records:
         key = (record["person_id"], record["day"])
@@ -467,6 +606,24 @@ def _personal_time_audit(
         or (person.life_stage == "child" and person.age_years >= 6)
         for person in population.people
     ) * 7
+    household_by_person = {
+        person.id: person.household_id for person in population.people
+    }
+    representative_actions = [
+        {
+            "person_id": item["person_id"],
+            "household_id": household_by_person[item["person_id"]],
+            "day": item["day"],
+            "category": item["category"],
+            "start_minute": item["start_minute"],
+            "end_minute": item["end_minute"],
+            "location_cell": item["location_cell"],
+            "location_precision": item["location_precision"],
+            "detail": item["detail"],
+        }
+        for item in records
+        if item["location_precision"] == "resource_or_water_cell"
+    ][:12]
     return {
         "records": len(records),
         "person_days": len(by_person_day),
@@ -480,8 +637,42 @@ def _personal_time_audit(
         "eligibility_violations": sum(
             not item["eligibility_checked"] for item in records
         ),
-        "location_precision": "household_camp_only",
+        "records_with_activity_site": sum(
+            item["location_precision"] == "resource_or_water_cell"
+            for item in records
+        ),
+        "records_with_camp_only": sum(
+            item["location_precision"] == "household_camp_only"
+            for item in records
+        ),
+        "representative_actions": representative_actions,
     }
+
+
+def _food_intake_summary(
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    by_day: dict[int, list[dict[str, Any]]] = {}
+    for record in records:
+        by_day.setdefault(record["day"], []).append(record)
+    daily = []
+    for day, items in sorted(by_day.items()):
+        ratios = [item["intake_ratio"] for item in items]
+        daily.append(
+            {
+                "day": day,
+                "below_80_percent_people": sum(
+                    item["below_80_percent_need"] for item in items
+                ),
+                "mean_intake_ratio": round(sum(ratios) / len(ratios), 4),
+                "minimum_intake_ratio": round(min(ratios), 4),
+            }
+        )
+    lowest = sorted(
+        records,
+        key=lambda item: (item["intake_ratio"], item["day"], item["person_id"]),
+    )[:12]
+    return {"daily": daily, "lowest_examples": lowest}
 
 
 def _water_diagnosis(
@@ -527,35 +718,34 @@ def _water_diagnosis(
 
 def _social_action_funnel(
     records: list[dict[str, Any]],
+    stats: dict[str, Any],
 ) -> dict[str, Any]:
-    need_events = sum(
+    total_need_events = sum(
         item["food_ratio"] < 0.8 or item["water_ratio"] < 0.8
         for item in records
     )
+    def aid_stats(name: str) -> dict[str, Any]:
+        item = stats.get(name, {})
+        return {
+            "need_events": item.get("need_events", 0),
+            "contact_opportunity": item.get("contacts_considered", 0),
+            "consider_request": item.get("need_events", 0),
+            "request_sent": item.get("requests_sent", 0),
+            "response_received": item.get("responses_received", 0),
+            "accepted": item.get("accepted", 0),
+            "rejected": item.get("rejected", 0),
+            "executed": item.get("executed", 0),
+            "not_continued_reasons": item.get(
+                "not_continued_reasons", {}
+            ),
+        }
     return {
-        "need_events": need_events,
-        "interhousehold": {
-            "contact_opportunity": "not_connected",
-            "consider_request": "not_connected",
-            "request_sent": 0,
-            "response_received": 0,
-            "executed": 0,
-            "classification": "not_connected_to_integrated_loop",
-        },
-        "teaching": {
-            "need_measurement": "not_measured",
-            "contact_opportunity": "not_connected",
-            "request_sent": 0,
-            "response_received": 0,
-            "executed": 0,
-            "classification": "not_connected_to_integrated_loop",
-        },
-        "cohabitation": {
-            "need_measurement": "not_measured",
-            "contact_opportunity": "not_connected",
-            "request_sent": 0,
-            "response_received": 0,
-            "executed": 0,
-            "classification": "not_connected_to_integrated_loop",
-        },
+        "total_need_events": total_need_events,
+        "water": aid_stats("water"),
+        "food": aid_stats("food"),
+        "fire": aid_stats("fire"),
+        "care": aid_stats("care"),
+        "shelter": aid_stats("shelter"),
+        "teaching": aid_stats("teaching"),
+        "classification": "connected_to_integrated_loop",
     }

@@ -18,13 +18,14 @@ from plain_life.integration import (
 
 
 def main() -> int:
-    result = run_seven_day_integration(ROOT)
+    version = sys.argv[1] if len(sys.argv) > 1 else "v4"
+    result = run_seven_day_integration(ROOT, version=version)
     docs_path = (
         ROOT
         / "docs"
         / "phase1"
         / "versions"
-        / "v3"
+        / version
         / "SEVEN_DAY_INTEGRATION.md"
     )
     artifacts_path = (
@@ -32,7 +33,7 @@ def main() -> int:
         / "artifacts"
         / "phase1"
         / "versions"
-        / "v3"
+        / version
         / "seven_day_integration.json"
     )
     docs_path.write_text(

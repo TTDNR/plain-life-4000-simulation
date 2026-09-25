@@ -64,6 +64,12 @@ class DayMetric:
     migrations: int
     surface_water_m3: float
     remaining_wild_food_kcal: float
+    known_available_food_kcal: float
+    stock_kg_acquired: float
+    edible_food_kg_acquired: float
+    food_store_end_kcal: float
+    food_obstacles: dict[str, int]
+    food_resource_switches: int
 
 
 @dataclass
@@ -76,6 +82,7 @@ class HouseholdRuntime:
     material_options: dict[str, list[int]]
     person_known_cells: dict[str, set[int]]
     food_store_kg: dict[str, float] = field(default_factory=dict)
+    food_store_kcal: float = 0.0
     shelter_quality: float = 0.0
     fire_quality: float = 0.0
     tool_quality: float = 0.45
@@ -126,6 +133,15 @@ class HouseholdRuntime:
     last_water_emergency: bool = False
     last_care_overlap_allowance: float = 0.0
     last_care_overlap_used: float = 0.0
+    nearest_water_cell_index: int = 0
+    last_food_activity_cell: int | None = None
+    last_harvested_resource: str | None = None
+    food_resource_switches: int = 0
+    pending_water_credit_l: float = 0.0
+    pending_care_credit_hours: float = 0.0
+    last_care_credit_used_hours: float = 0.0
+    social_travel_debt_hours: float = 0.0
+    shelter_guest_capacity_used: int = 0
 
     @property
     def skills(self) -> set[str]:
@@ -155,6 +171,9 @@ class SurvivalRunResult:
     integration_diagnostics: dict[str, Any]
     household_daily_records: list[dict[str, Any]]
     person_daily_records: list[dict[str, Any]]
+    social_action_records: list[dict[str, Any]]
+    social_action_stats: dict[str, Any]
+    person_food_records: list[dict[str, Any]]
     resource_consumption_kg: dict[str, float]
     migration_summary: dict[str, Any]
     final_resource_stock_kg: dict[str, float]
@@ -177,6 +196,9 @@ class SurvivalRunResult:
             "integration_diagnostics": self.integration_diagnostics,
             "household_daily_records": self.household_daily_records,
             "person_daily_records": self.person_daily_records,
+            "social_action_records": self.social_action_records,
+            "social_action_stats": self.social_action_stats,
+            "person_food_records": self.person_food_records,
             "resource_consumption_kg": self.resource_consumption_kg,
             "migration_summary": self.migration_summary,
             "final_resource_stock_kg": self.final_resource_stock_kg,
@@ -189,6 +211,8 @@ def run_survival_validation(
     days: int = 365,
     behavior_states: dict[str, Any] | None = None,
     record_household_trace: bool = False,
+    enable_social_exchange: bool = False,
+    apply_body_feedback: bool = True,
 ) -> SurvivalRunResult:
     world = initial_world.clone()
     start_fingerprint = initial_world.initial_fingerprint
@@ -237,10 +261,13 @@ def run_survival_validation(
     household_daily_records: list[dict[str, Any]] = []
     person_daily_records: list[dict[str, Any]] = []
     body_daily_summaries: list[dict[str, Any]] = []
+    social_action_records: list[dict[str, Any]] = []
+    social_action_stats = _empty_social_stats()
+    person_food_records: list[dict[str, Any]] = []
     camps_after_day_one_selection: set[int] = set()
 
     for day in range(1, days + 1):
-        if behavior_states:
+        if behavior_states and apply_body_feedback:
             _apply_body_constraints(runtimes, behavior_states)
         weather = _advance_day(world)
         _prepare_household_runtimes(
@@ -272,8 +299,20 @@ def run_survival_validation(
             person_daily_records if record_household_trace else None,
         )
         metrics.append(day_metric)
-        if behavior_states:
-            _update_body_after_day(runtimes, behavior_states, day)
+        if enable_social_exchange:
+            _run_social_exchange_phase(
+                world,
+                runtimes,
+                day,
+                weather,
+                social_action_records,
+                social_action_stats,
+                behavior_states,
+            )
+        if behavior_states and apply_body_feedback:
+            person_food_records.extend(
+                _update_body_after_day(runtimes, behavior_states, day)
+            )
             body_daily_summaries.append(
                 _summarize_body_day(behavior_states, day)
             )
@@ -303,7 +342,10 @@ def run_survival_validation(
         time_account,
     )
     integration_diagnostics = _summarize_integration(
-        behavior_states, runtimes, metrics, body_daily_summaries
+        behavior_states if apply_body_feedback else None,
+        runtimes,
+        metrics,
+        body_daily_summaries,
     )
     migration_summary = {
         "households_that_migrated": sum(
@@ -355,6 +397,9 @@ def run_survival_validation(
         integration_diagnostics=integration_diagnostics,
         household_daily_records=household_daily_records,
         person_daily_records=person_daily_records,
+        social_action_records=social_action_records,
+        social_action_stats=social_action_stats,
+        person_food_records=person_food_records,
         resource_consumption_kg={
             key: round(value, 3)
             for key, value in sorted(resource_consumption.items())
@@ -406,6 +451,7 @@ def _initialize_household_runtimes(
             person_known_cells={
                 person.id: {drop_index} for person in members
             },
+            nearest_water_cell_index=_nearest_water_cell_index(world, drop_index),
         )
     return runtimes
 
@@ -520,6 +566,9 @@ def _prepare_household_runtimes(
                         / 4.5
                     )
                     runtime.camp_cell_index = best
+                    runtime.nearest_water_cell_index = (
+                        _nearest_water_cell_index(world, best)
+                    )
                     runtime.migrations += 1
                     runtime.last_migration_day = day
                     runtime.migration_travel_debt_hours += migration_hours
@@ -566,6 +615,10 @@ def _simulate_day(
     knowledge_hours_total = 0.0
     household_food_ratios: list[float] = []
     households_below_080 = 0
+    known_available_food_kcal = 0.0
+    daily_harvest_start = len(daily_harvest_details)
+    food_obstacles: dict[str, int] = defaultdict(int)
+    food_resource_switches = 0
     household_order = sorted(
         runtimes,
         key=lambda household_id: (
@@ -577,6 +630,9 @@ def _simulate_day(
     for household_id in household_order:
         runtime = runtimes[household_id]
         household_category_hours: dict[str, float] = defaultdict(float)
+        known_available_food_kcal += _known_available_food_kcal(
+            world, runtime
+        )
         demand = sum(_daily_kcal_need(person) for person in runtime.members)
         litres = (
             len(runtime.members)
@@ -587,9 +643,27 @@ def _simulate_day(
             )
         )
         hours, care_hours, potential_hours = _available_labour_hours(runtime)
+        care_credit_used = min(
+            care_hours, runtime.pending_care_credit_hours
+        )
+        runtime.last_care_credit_used_hours = care_credit_used
+        care_hours -= care_credit_used
+        hours += care_credit_used
+        runtime.pending_care_credit_hours = max(
+            0.0, runtime.pending_care_credit_hours - care_credit_used
+        )
         runtime.last_potential_hours = potential_hours
         runtime.last_care_hours = care_hours
         time_account["potential"] += potential_hours
+        social_travel_hours = min(
+            hours, runtime.social_travel_debt_hours
+        )
+        runtime.social_travel_debt_hours = max(
+            0.0, runtime.social_travel_debt_hours - social_travel_hours
+        )
+        hours -= social_travel_hours
+        time_account["social_travel"] += social_travel_hours
+        household_category_hours["social_travel"] += social_travel_hours
         migration_hours = min(hours, runtime.migration_travel_debt_hours)
         runtime.last_migration_hours = migration_hours
         hours -= migration_hours
@@ -634,14 +708,28 @@ def _simulate_day(
             care_hours * 0.5 if water_emergency else 0.0
         )
         runtime.last_care_overlap_allowance = care_overlap_allowance
-        water_hours, delivered_litres, water_method = _fetch_water(
-            world,
-            runtime,
-            litres,
-            hours + care_overlap_allowance,
-            day,
-            water_distance_cache,
+        delivered_credit = min(litres, runtime.pending_water_credit_l)
+        runtime.pending_water_credit_l = max(
+            0.0, runtime.pending_water_credit_l - delivered_credit
         )
+        water_needed_after_credit = max(0.0, litres - delivered_credit)
+        if water_needed_after_credit <= 0.0:
+            water_hours = 0.0
+            fetched_litres = 0.0
+            water_method = "delivered_by_nearby_household"
+            runtime.last_water_method = water_method
+            runtime.last_water_hours = 0.0
+            runtime.last_water_delivered_l = delivered_credit
+        else:
+            water_hours, fetched_litres, water_method = _fetch_water(
+                world,
+                runtime,
+                water_needed_after_credit,
+                hours + care_overlap_allowance,
+                day,
+                water_distance_cache,
+            )
+        delivered_litres = delivered_credit + fetched_litres
         time_account["water"] += water_hours
         household_category_hours["water"] += water_hours
         care_overlap_used = min(
@@ -692,6 +780,8 @@ def _simulate_day(
             * _storage_target_fraction(day, world.start_day_of_year)
             - _store_kcal(world, runtime),
         )
+        runtime.last_food_activity_cell = None
+        previous_resource = runtime.last_harvested_resource
         acquired, food_hours_used = _harvest_food(
             world,
             runtime,
@@ -701,8 +791,15 @@ def _simulate_day(
             harvest_details,
             daily_harvest_details,
             time_account,
+            food_obstacles,
         )
         hours -= food_hours_used
+        if (
+            runtime.last_harvested_resource != previous_resource
+            and previous_resource is not None
+        ):
+            runtime.food_resource_switches += 1
+            food_resource_switches += 1
         household_category_hours["food_harvest_and_processing"] += (
             food_hours_used
         )
@@ -723,7 +820,7 @@ def _simulate_day(
             )
         food_available_before_consumption = _store_kcal(world, runtime)
         consumed = _consume_food(world, runtime, demand)
-        _spoil_food(runtime)
+        _spoil_food(world, runtime)
         ratio = consumed / demand if demand else 1.0
         if ratio < 0.5:
             runtime.food_deficit_streak += 1
@@ -818,6 +915,7 @@ def _simulate_day(
         }.items()
     )
     household_count = len(runtimes)
+    daily_harvest = daily_harvest_details[daily_harvest_start:]
     return DayMetric(
         day=day,
         day_of_year=world.day_of_year,
@@ -851,6 +949,21 @@ def _simulate_day(
         migrations=migrations,
         surface_water_m3=round(world.water_volume_m3, 3),
         remaining_wild_food_kcal=round(remaining_wild_food, 3),
+        known_available_food_kcal=round(known_available_food_kcal, 3),
+        stock_kg_acquired=round(
+            sum(float(item["stock_kg_removed"]) for item in daily_harvest),
+            6,
+        ),
+        edible_food_kg_acquired=round(
+            sum(float(item["edible_food_kg"]) for item in daily_harvest),
+            6,
+        ),
+        food_store_end_kcal=round(
+            sum(runtime.food_store_kcal for runtime in runtimes.values()),
+            3,
+        ),
+        food_obstacles=dict(sorted(food_obstacles.items())),
+        food_resource_switches=food_resource_switches,
     )
 
 
@@ -874,7 +987,8 @@ def _update_body_after_day(
     runtimes: dict[str, HouseholdRuntime],
     behavior_states: dict[str, Any],
     day: int,
-) -> None:
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
     for runtime in runtimes.values():
         state_members = [
             behavior_states[person.id]
@@ -898,13 +1012,17 @@ def _update_body_after_day(
             )
             for state in state_members
         }
-        total_need = sum(effective_needs.values())
+        total_weighted_claim = sum(
+            effective_needs[state.person_id] * state.food_claim_weight
+            for state in state_members
+        )
         for state in state_members:
             effective_need = effective_needs[state.person_id]
             intake = (
                 runtime.last_consumed_kcal
                 * effective_need
-                / max(1.0, total_need)
+                * state.food_claim_weight
+                / max(1.0, total_weighted_claim)
             )
             deficit = effective_need - intake
             state.body.energy_balance_kcal -= deficit
@@ -947,6 +1065,28 @@ def _update_body_after_day(
                 state.body.fatigue = max(
                     0.0, state.body.fatigue - 0.08
                 )
+            records.append(
+                {
+                    "day": day,
+                    "person_id": state.person_id,
+                    "household_id": runtime.household_id,
+                    "intake_kcal": round(intake, 3),
+                    "effective_need_kcal": round(effective_need, 3),
+                    "intake_ratio": round(intake_ratio, 4),
+                    "food_claim_weight": round(
+                        state.food_claim_weight, 4
+                    ),
+                    "sharing_disposition": round(
+                        state.sharing_disposition, 4
+                    ),
+                    "hunger_after": round(state.body.hunger, 4),
+                    "energy_balance_kcal": round(
+                        state.body.energy_balance_kcal, 3
+                    ),
+                    "below_80_percent_need": intake_ratio < 0.8,
+                }
+            )
+    return records
 
 
 def _summarize_integration(
@@ -1002,6 +1142,478 @@ def _summarize_integration(
     }
 
 
+def _empty_social_stats() -> dict[str, Any]:
+    aid_types = ("water", "food", "fire", "care", "shelter", "teaching")
+    return {
+        aid_type: {
+            "need_events": 0,
+            "contacts_considered": 0,
+            "requests_sent": 0,
+            "responses_received": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "executed": 0,
+            "not_continued_reasons": {},
+        }
+        for aid_type in aid_types
+    }
+
+
+def _run_social_exchange_phase(
+    world: WorldState,
+    runtimes: dict[str, HouseholdRuntime],
+    day: int,
+    weather: dict[str, float],
+    records: list[dict[str, Any]],
+    stats: dict[str, Any],
+    behavior_states: dict[str, Any] | None,
+) -> None:
+    runtimes_list = sorted(runtimes.values(), key=lambda item: item.household_id)
+    for runtime in runtimes_list:
+        if runtime.last_care_credit_used_hours > 0.0:
+            stats["care"]["executed"] += 1
+            records.append(
+                {
+                    "day": day,
+                    "aid_type": "care",
+                    "requestor_id": runtime.household_id,
+                    "donor_id": None,
+                    "accepted": True,
+                    "executed": True,
+                    "details": {
+                        "care_hours": runtime.last_care_credit_used_hours,
+                        "execution_time": "current_day",
+                    },
+                }
+            )
+            runtime.last_care_credit_used_hours = 0.0
+    for requestor in runtimes_list:
+        aid_type = _choose_social_need(
+            requestor, weather, behavior_states
+        )
+        if aid_type is None:
+            continue
+        stats[aid_type]["need_events"] += 1
+        contacts = _nearby_contact_households(
+            world, requestor, runtimes_list, max_distance_km=1.0, limit=6
+        )
+        if not contacts:
+            _record_social_reason(
+                records,
+                stats,
+                day,
+                aid_type,
+                requestor,
+                None,
+                "no_reachable_contact",
+            )
+            continue
+        donor = next(
+            (
+                candidate
+                for _, candidate in contacts
+                if _can_help_with(aid_type, candidate, requestor, behavior_states)
+            ),
+            None,
+        )
+        stats[aid_type]["contacts_considered"] += len(contacts)
+        if donor is None:
+            _record_social_reason(
+                records,
+                stats,
+                day,
+                aid_type,
+                requestor,
+                None,
+                "no_contact_with_capacity_or_resource",
+            )
+            continue
+        distance_km = _distance_km(
+            world, requestor.camp_cell_index, donor.camp_cell_index
+        )
+        stats[aid_type]["requests_sent"] += 1
+        relation_trust = _relationship_trust(stats, requestor, donor)
+        donor_capacity = _help_capacity_score(aid_type, donor, requestor)
+        willingness = max(
+            0.05,
+            min(
+                0.95,
+                0.15 + 0.45 * relation_trust + 0.4 * donor_capacity,
+            ),
+        )
+        response_value = _stable_unit(
+            world.seed + day * 9973,
+            requestor.household_id + ":" + donor.household_id + ":" + aid_type,
+        )
+        accepted = response_value < willingness
+        stats[aid_type]["responses_received"] += 1
+        if not accepted:
+            stats[aid_type]["rejected"] += 1
+            _record_social_reason(
+                records,
+                stats,
+                day,
+                aid_type,
+                requestor,
+                donor,
+                "request_rejected",
+                distance_km=distance_km,
+                willingness=willingness,
+            )
+            continue
+        stats[aid_type]["accepted"] += 1
+        executed, details = _execute_social_help(
+            world,
+            day,
+            aid_type,
+            donor,
+            requestor,
+            distance_km,
+            behavior_states,
+        )
+        if executed and aid_type != "care":
+            stats[aid_type]["executed"] += 1
+        elif aid_type == "care":
+            details["execution_state"] = "scheduled_for_next_day"
+        else:
+            _record_social_reason(
+                records,
+                stats,
+                day,
+                aid_type,
+                requestor,
+                donor,
+                details.get("failure_reason", "execution_failed"),
+            )
+        records.append(
+            {
+                "day": day,
+                "aid_type": aid_type,
+                "requestor_id": requestor.household_id,
+                "donor_id": donor.household_id,
+                "distance_km": round(distance_km, 4),
+                "relation_trust": round(relation_trust, 4),
+                "donor_capacity_score": round(donor_capacity, 4),
+                "willingness": round(willingness, 4),
+                "accepted": accepted,
+                "executed": executed and aid_type != "care",
+                "details": details,
+            }
+        )
+        stats.setdefault("contact_counts", {}).setdefault(
+            requestor.household_id, {}
+        )[donor.household_id] = (
+            stats.setdefault("contact_counts", {})
+            .setdefault(requestor.household_id, {})
+            .get(donor.household_id, 0)
+            + 1
+        )
+
+
+def _choose_social_need(
+    requestor: HouseholdRuntime,
+    weather: dict[str, float],
+    behavior_states: dict[str, Any] | None,
+) -> str | None:
+    if requestor.last_water_ratio < 0.8:
+        return "water"
+    if requestor.last_care_hours > requestor.last_potential_hours * 0.7:
+        return "care"
+    if requestor.last_food_ratio < 0.75:
+        return "food"
+    if requestor.fire_quality <= 0.0:
+        return "fire"
+    if (
+        requestor.shelter_quality < 0.5
+        and weather.get("rainfall_mm", 0.0) > 1.0
+    ):
+        return "shelter"
+    if behavior_states:
+        key_skills = {
+            "fire_friction",
+            "acorn_processing",
+            "fiber_cordage",
+            "shelter_building",
+            "water_safety",
+        }
+        for person in requestor.members:
+            state = behavior_states.get(person.id)
+            if state is None or person.life_stage not in {
+                "adolescent",
+                "adult",
+                "elder",
+            }:
+                continue
+            known = {
+                subject.removeprefix("skill.")
+                for subject in state.knowledge
+                if subject.startswith("skill.")
+            }
+            if key_skills - known:
+                return "teaching"
+    return None
+
+
+def _nearby_contact_households(
+    world: WorldState,
+    requestor: HouseholdRuntime,
+    runtimes: list[HouseholdRuntime],
+    max_distance_km: float,
+    limit: int,
+) -> list[tuple[float, HouseholdRuntime]]:
+    candidates: list[tuple[float, HouseholdRuntime]] = []
+    for candidate in runtimes:
+        if candidate.household_id == requestor.household_id:
+            continue
+        distance = _distance_km(
+            world, requestor.camp_cell_index, candidate.camp_cell_index
+        )
+        if distance <= max_distance_km:
+            candidates.append((distance, candidate))
+    candidates.sort(key=lambda item: (item[0], item[1].household_id))
+    return candidates[:limit]
+
+
+def _can_help_with(
+    aid_type: str,
+    donor: HouseholdRuntime,
+    requestor: HouseholdRuntime,
+    behavior_states: dict[str, Any] | None,
+) -> bool:
+    if aid_type == "water":
+        return donor.water_container_capacity_l >= 1.0
+    if aid_type == "food":
+        return _store_kcal_from_runtime(donor) > 0.0
+    if aid_type == "fire":
+        return donor.fire_quality >= 0.4
+    if aid_type == "care":
+        return donor.last_labour_hours < donor.last_potential_hours * 0.7
+    if aid_type == "shelter":
+        return (
+            donor.shelter_quality >= 0.55
+            and donor.shelter_guest_capacity_used < 2
+        )
+    if aid_type == "teaching":
+        return bool(
+            behavior_states
+            and _teachable_skill(donor, requestor, behavior_states)
+        )
+    return False
+
+
+def _help_capacity_score(
+    aid_type: str,
+    donor: HouseholdRuntime,
+    requestor: HouseholdRuntime,
+) -> float:
+    if aid_type == "water":
+        return min(1.0, donor.water_container_capacity_l / 8.0)
+    if aid_type == "food":
+        demand = max(1.0, donor.last_consumed_kcal)
+        return min(1.0, _store_kcal_from_runtime(donor) / (demand * 2.0))
+    if aid_type == "fire":
+        return min(1.0, donor.fire_quality)
+    if aid_type == "care":
+        return max(
+            0.0,
+            min(
+                1.0,
+                (donor.last_potential_hours - donor.last_labour_hours)
+                / max(1.0, donor.last_potential_hours),
+            ),
+        )
+    if aid_type == "shelter":
+        return max(0.0, (2 - donor.shelter_guest_capacity_used) / 2.0)
+    if aid_type == "teaching":
+        return 0.6
+    return 0.0
+
+
+def _execute_social_help(
+    world: WorldState,
+    day: int,
+    aid_type: str,
+    donor: HouseholdRuntime,
+    requestor: HouseholdRuntime,
+    distance_km: float,
+    behavior_states: dict[str, Any] | None,
+) -> tuple[bool, dict[str, Any]]:
+    if aid_type == "water":
+        delivered = min(
+            max(0.0, 3.0 * len(requestor.members) - requestor.pending_water_credit_l),
+            min(4.0, donor.water_container_capacity_l),
+        )
+        requestor.pending_water_credit_l += delivered
+        donor.social_travel_debt_hours += distance_km * 2.0 / 4.5
+        return delivered > 0.0, {"water_litres": delivered}
+    if aid_type == "food":
+        store = donor.food_store_kg
+        if not store:
+            return False, {"failure_reason": "donor_store_empty"}
+        resource_id = max(store, key=store.get)
+        donor_kcal = _store_kcal_from_runtime(donor)
+        donor_surplus = max(0.0, donor_kcal - donor.last_consumed_kcal)
+        requestor_need = max(
+            0.0,
+            sum(_daily_kcal_need(person) for person in requestor.members)
+            - _store_kcal_from_runtime(requestor),
+        )
+        transfer_kcal = min(
+            donor_surplus * 0.25,
+            requestor_need,
+        )
+        spec = world.resource_spec(resource_id)
+        kg = min(
+            store[resource_id],
+            transfer_kcal / float(spec["kcal_per_kg"]),
+        )
+        store[resource_id] -= kg
+        requestor.food_store_kg[resource_id] = (
+            requestor.food_store_kg.get(resource_id, 0.0) + kg
+        )
+        transferred_kcal = kg * float(spec["kcal_per_kg"])
+        donor.food_store_kcal = max(0.0, donor.food_store_kcal - transferred_kcal)
+        requestor.food_store_kcal += transferred_kcal
+        return kg > 0.0, {
+            "food_resource": resource_id,
+            "food_kg": round(kg, 6),
+            "food_kcal": round(transferred_kcal, 3),
+        }
+    if aid_type == "fire":
+        if distance_km * 2.0 / 4.5 > 1.0:
+            return False, {"failure_reason": "fire_transport_too_far"}
+        donor.fire_quality = max(0.3, donor.fire_quality - 0.1)
+        requestor.fire_quality = max(requestor.fire_quality, 0.6)
+        donor.social_travel_debt_hours += distance_km * 2.0 / 4.5
+        return True, {
+            "fire_quality_received": round(requestor.fire_quality, 3),
+            "transport_hours": round(distance_km * 2.0 / 4.5, 4),
+        }
+    if aid_type == "care":
+        available = max(
+            0.0,
+            donor.last_potential_hours - donor.last_labour_hours,
+        )
+        accepted_hours = min(2.0, available)
+        requestor.pending_care_credit_hours += accepted_hours
+        donor.social_travel_debt_hours += 0.25
+        return accepted_hours > 0.0, {
+            "care_hours": round(accepted_hours, 4),
+            "execution_time": "next_day",
+        }
+    if aid_type == "shelter":
+        if donor.shelter_quality < 0.55 or donor.shelter_guest_capacity_used >= 2:
+            return False, {"failure_reason": "shelter_capacity_full"}
+        protected_people = min(2, 2 - donor.shelter_guest_capacity_used)
+        donor.shelter_guest_capacity_used += protected_people
+        requestor.shelter_quality = max(requestor.shelter_quality, 0.65)
+        return True, {
+            "protected_people": protected_people,
+            "duration": "temporary_one_night",
+        }
+    if aid_type == "teaching":
+        skill_id = _teachable_skill(donor, requestor, behavior_states or {})
+        if not skill_id or not behavior_states:
+            return False, {"failure_reason": "teaching_opportunity_lost"}
+        learner = next(
+            (
+                behavior_states[person.id]
+                for person in requestor.members
+                if person.id in behavior_states
+                and not behavior_states[person.id].knows(
+                    f"skill.{skill_id}", "demonstrated"
+                )
+            ),
+            None,
+        )
+        teacher = next(
+            (
+                behavior_states[person.id]
+                for person in donor.members
+                if person.id in behavior_states
+                and behavior_states[person.id].knows(
+                    f"skill.{skill_id}", "can_teach"
+                )
+            ),
+            None,
+        )
+        if learner is None or teacher is None:
+            return False, {"failure_reason": "teacher_or_learner_unavailable"}
+        learner.receive_knowledge(
+            f"skill.{skill_id}",
+            "demonstrated",
+            teacher.person_id,
+            day,
+            0.6,
+        )
+        donor.social_travel_debt_hours += 0.5
+        requestor.social_travel_debt_hours += 0.5
+        return True, {"skill_id": skill_id, "stage": "demonstrated"}
+    return False, {"failure_reason": "unsupported_aid_type"}
+
+
+def _teachable_skill(
+    donor: HouseholdRuntime,
+    requestor: HouseholdRuntime,
+    behavior_states: dict[str, Any],
+) -> str | None:
+    donor_skills = {
+        skill["id"] for person in donor.members for skill in person.skills
+    }
+    requestor_skills = {
+        skill["id"]
+        for person in requestor.members
+        for skill in person.skills
+    }
+    candidates = sorted(donor_skills - requestor_skills)
+    return candidates[0] if candidates else None
+
+
+def _relationship_trust(
+    stats: dict[str, Any],
+    first: HouseholdRuntime,
+    second: HouseholdRuntime,
+) -> float:
+    counts = stats.get("contact_counts", {})
+    contact_count = counts.get(first.household_id, {}).get(
+        second.household_id, 0
+    )
+    return min(0.8, 0.2 + 0.08 * contact_count)
+
+
+def _store_kcal_from_runtime(runtime: HouseholdRuntime) -> float:
+    return runtime.food_store_kcal
+
+
+def _record_social_reason(
+    records: list[dict[str, Any]],
+    stats: dict[str, Any],
+    day: int,
+    aid_type: str,
+    requestor: HouseholdRuntime,
+    donor: HouseholdRuntime | None,
+    reason: str,
+    *,
+    distance_km: float | None = None,
+    willingness: float | None = None,
+) -> None:
+    reasons = stats[aid_type]["not_continued_reasons"]
+    reasons[reason] = reasons.get(reason, 0) + 1
+    records.append(
+        {
+            "day": day,
+            "aid_type": aid_type,
+            "requestor_id": requestor.household_id,
+            "donor_id": donor.household_id if donor else None,
+            "distance_km": distance_km,
+            "willingness": willingness,
+            "accepted": False,
+            "executed": False,
+            "reason": reason,
+        }
+    )
+
+
 def _summarize_body_day(
     behavior_states: dict[str, Any],
     day: int,
@@ -1052,6 +1664,7 @@ def _build_person_activity_records(
         )
     assigned = {person_id: 0.0 for person_id in capacities}
     care_by_person: dict[str, float] = defaultdict(float)
+    care_targets_by_person: dict[str, list[str]] = defaultdict(list)
     for dependent in runtime.members:
         care = {
             "infant": 5.0,
@@ -1081,6 +1694,8 @@ def _build_person_activity_records(
                 max(0.0, capacities[caregiver.id] - assigned[caregiver.id]),
             )
             care_by_person[caregiver.id] += actual
+            if actual > 0.0:
+                care_targets_by_person[caregiver.id].append(dependent.id)
             assigned[caregiver.id] += actual
 
     eligible_by_category = {
@@ -1156,6 +1771,7 @@ def _build_person_activity_records(
         cursor = 6 * 60
         care = care_by_person.get(person.id, 0.0)
         if care > 0.0:
+            care_location = runtime.camp_cell_index
             records.append(
                 _activity_record(
                     day,
@@ -1164,7 +1780,10 @@ def _build_person_activity_records(
                     cursor,
                     care,
                     "rule_based_dependency_assignment",
-                    runtime.camp_cell_index,
+                    care_location,
+                    target_person_ids=care_targets_by_person.get(
+                        person.id, []
+                    ),
                 )
             )
             cursor += int(round(care * 60))
@@ -1180,7 +1799,14 @@ def _build_person_activity_records(
                     cursor,
                     hours,
                     "state_limited_household_task_allocation",
-                    runtime.camp_cell_index,
+                    _activity_location(runtime, category),
+                    detail=(
+                        runtime.last_water_method
+                        if category == "water"
+                        else runtime.last_harvested_resource
+                        if category == "food_harvest_and_processing"
+                        else None
+                    ),
                 )
             )
             cursor += int(round(hours * 60))
@@ -1208,6 +1834,8 @@ def _activity_record(
     hours: float,
     assignment_source: str,
     location_cell: int,
+    target_person_ids: list[str] | None = None,
+    detail: str | None = None,
 ) -> dict[str, Any]:
     return {
         "day": day,
@@ -1218,9 +1846,26 @@ def _activity_record(
         "hours": round(hours, 6),
         "assignment_source": assignment_source,
         "location_cell": location_cell,
-        "location_precision": "household_camp_only",
+        "location_precision": (
+            "resource_or_water_cell"
+            if category in {"water", "food_harvest_and_processing"}
+            else "household_camp_only"
+        ),
         "eligibility_checked": True,
+        "target_person_ids": target_person_ids or [],
+        "detail": detail,
     }
+
+
+def _activity_location(
+    runtime: HouseholdRuntime,
+    category: str,
+) -> int:
+    if category == "water":
+        return runtime.nearest_water_cell_index
+    if category == "food_harvest_and_processing":
+        return runtime.last_food_activity_cell or runtime.camp_cell_index
+    return runtime.camp_cell_index
 
 
 def _available_labour_hours(
@@ -1299,6 +1944,11 @@ def _fetch_water(
     runtime.last_water_distance_km = distance_km
     runtime.last_mobile_people = len(mobile_people)
     runtime.last_dependent_people = dependent_count
+    if not mobile_people:
+        runtime.last_water_method = "no_mobile_person"
+        runtime.last_water_hours = 0.0
+        runtime.last_water_delivered_l = 0.0
+        return 0.0, 0.0, "no_mobile_person"
     if day == 1:
         escort_trips = math.ceil(dependent_count / 2.0)
         drinkers = len(mobile_people) + min(
@@ -1584,28 +2234,34 @@ def _harvest_food(
     harvest_details: dict[str, dict[str, float]],
     daily_harvest_details: list[dict[str, float | str]],
     time_account: dict[str, float],
+    food_obstacles: dict[str, int],
 ) -> tuple[float, float]:
     if hours <= 0.0 or target_kcal <= 0.0:
         return 0.0, 0.0
     acquired = 0.0
+    selected_resource: str | None = None
     remaining_hours = hours
     for resource_id, cell_index, _, distance_km in runtime.supply_options:
         if remaining_hours <= 0.02 or acquired >= target_kcal:
             break
         spec = world.resource_spec(resource_id)
         if not world.is_available(resource_id):
+            food_obstacles["not_mature_or_out_of_season"] += 1
             continue
         if not _can_harvest_by_member(spec, runtime):
+            food_obstacles["no_household_member_with_knowledge"] += 1
             continue
         if resource_id in world.plant_stock_kg:
             stock = world.plant_stock_kg[resource_id][cell_index]
         else:
             stock = world.animal_stock_kg[resource_id][cell_index]
         if stock <= 0.001:
+            food_obstacles["local_stock_depleted"] += 1
             continue
         travel_hours = _distance_walk_hours(distance_km)
         effective_hours = remaining_hours - travel_hours
         if effective_hours <= 0.02:
+            food_obstacles["no_time_after_travel"] += 1
             continue
         edible_yield = float(spec.get("edible_yield_fraction", 1.0))
         if edible_yield <= 0.0:
@@ -1637,6 +2293,8 @@ def _harvest_food(
             array = world.animal_stock_kg[resource_id]
             capacity = world.animal_capacity_kg[resource_id][cell_index]
         array[cell_index] -= stock_kg
+        if runtime.last_food_activity_cell is None:
+            runtime.last_food_activity_cell = cell_index
         if capacity > 0.0 and stock_kg / capacity > 0.55:
             if resource_id in world.plant_regen_condition:
                 world.plant_regen_condition[resource_id][cell_index] = max(
@@ -1653,9 +2311,13 @@ def _harvest_food(
         if attempt_value > success_rate:
             edible_kg = 0.0
             details["processing_failures"] += 1
+            food_obstacles["processing_failed"] += 1
         runtime.food_store_kg[resource_id] = (
             runtime.food_store_kg.get(resource_id, 0.0) + edible_kg
         )
+        if selected_resource is None:
+            selected_resource = resource_id
+        runtime.food_store_kcal += edible_kg * float(spec["kcal_per_kg"])
         consumption[resource_id] = (
             consumption.get(resource_id, 0.0) + stock_kg
         )
@@ -1684,6 +2346,8 @@ def _harvest_food(
             }
         )
         acquired += edible_kg * float(spec["kcal_per_kg"])
+    if selected_resource is not None:
+        runtime.last_harvested_resource = selected_resource
     return acquired, hours - remaining_hours
 
 
@@ -1712,23 +2376,31 @@ def _consume_food(
         used_kcal = min(available_kcal, remaining)
         used_kg = used_kcal / float(spec["kcal_per_kg"])
         runtime.food_store_kg[resource_id] = max(0.0, available_kg - used_kg)
+        runtime.food_store_kcal = max(
+            0.0, runtime.food_store_kcal - used_kcal
+        )
         remaining -= used_kcal
     return consumed_target
 
 
-def _spoil_food(runtime: HouseholdRuntime) -> None:
+def _spoil_food(world: WorldState, runtime: HouseholdRuntime) -> None:
     for resource_id, kg in list(runtime.food_store_kg.items()):
         rate = SPOILAGE_PER_DAY.get(resource_id, 0.05)
-        runtime.food_store_kg[resource_id] = kg * (1.0 - rate)
+        new_kg = kg * (1.0 - rate)
+        lost_kg = kg - new_kg
+        runtime.food_store_kg[resource_id] = new_kg
+        runtime.food_store_kcal = max(
+            0.0,
+            runtime.food_store_kcal
+            - lost_kg
+            * float(world.resource_spec(resource_id)["kcal_per_kg"]),
+        )
         if runtime.food_store_kg[resource_id] < 0.0001:
             del runtime.food_store_kg[resource_id]
 
 
 def _store_kcal(world: WorldState, runtime: HouseholdRuntime) -> float:
-    return sum(
-        kg * float(world.resource_spec(resource_id)["kcal_per_kg"])
-        for resource_id, kg in runtime.food_store_kg.items()
-    )
+    return runtime.food_store_kcal
 
 
 def _daily_kcal_need(person: Person) -> float:
@@ -1774,6 +2446,30 @@ def _can_harvest_by_member(
         ):
             return True
     return False
+
+
+def _known_available_food_kcal(
+    world: WorldState,
+    runtime: HouseholdRuntime,
+) -> float:
+    total = 0.0
+    for resource_id, cell_index, _, _ in runtime.supply_options:
+        if not world.is_available(resource_id):
+            continue
+        spec = world.resource_spec(resource_id)
+        if not _can_harvest_by_member(spec, runtime):
+            continue
+        stock = (
+            world.plant_stock_kg[resource_id][cell_index]
+            if resource_id in world.plant_stock_kg
+            else world.animal_stock_kg[resource_id][cell_index]
+        )
+        total += (
+            stock
+            * float(spec.get("edible_yield_fraction", 1.0))
+            * float(spec["kcal_per_kg"])
+        )
+    return total
 
 
 def _processing_success_rate(
@@ -1939,6 +2635,13 @@ def _nearest_water_distance_km(world: WorldState, camp_index: int) -> float:
     return min(
         _distance_km(world, camp_index, cell.index)
         for cell in world.water_cells
+    )
+
+
+def _nearest_water_cell_index(world: WorldState, camp_index: int) -> int:
+    return min(
+        (cell.index for cell in world.water_cells),
+        key=lambda index: _distance_km(world, camp_index, index),
     )
 
 
@@ -2475,6 +3178,13 @@ def _build_acquisition_paths(
                 key: round(value, 6)
                 for key, value in sorted(time_account.items())
             },
+            "pending_social_travel_hours": round(
+                sum(
+                    runtime.social_travel_debt_hours
+                    for runtime in runtimes.values()
+                ),
+                6,
+            ),
             "closure_error_hours": round(
                 time_account.get("potential", 0.0)
                 - sum(

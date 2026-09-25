@@ -61,3 +61,13 @@ v1 的“自然再生量可能支持长期生存”判断已被撤销。该判�
 - [v3 人物与家庭短场景](v3/BEHAVIOR_SCENARIOS.md)
 - [v3 七天整合诊断](v3/SEVEN_DAY_INTEGRATION.md)
 - [v3 审计阻断项](v3/PHASE1_AUDIT.md)
+
+## v4
+
+状态：基础行为接入诊断版；正式长期模拟仍暂停。
+
+- [v4 状态](v4/PHASE1_STATUS.md)
+- [v4 人物与家庭短场景](v4/BEHAVIOR_SCENARIOS.md)
+- [v4 七天整合诊断](v4/SEVEN_DAY_INTEGRATION.md)
+- [v4 变更记录](v4/CHANGES.md)
+- [v4 审计](v4/PHASE1_AUDIT.md)
