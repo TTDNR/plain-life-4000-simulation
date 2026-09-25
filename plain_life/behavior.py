@@ -28,6 +28,8 @@ class KnowledgeRecord:
     learned_at_day: int
     certainty: float
     practice_count: int = 0
+    successful_operations: int = 0
+    failed_operations: int = 0
 
 
 @dataclass
@@ -56,6 +58,9 @@ class BodyState:
 
     @property
     def work_capacity(self) -> float:
+        metabolic_stress = max(
+            0.0, min(1.0, -self.energy_balance_kcal / 15000.0)
+        )
         capacity = (
             1.0
             - 0.42 * self.hunger
@@ -64,11 +69,15 @@ class BodyState:
             - 0.22 * self.pain
             - 0.35 * self.injury
             - 0.015 * self.sleep_debt_hours
+            - 0.3 * metabolic_stress
         )
         return max(0.05, min(1.0, capacity * self.mobility))
 
     @property
     def care_dependency(self) -> float:
+        metabolic_stress = max(
+            0.0, min(1.0, -self.energy_balance_kcal / 15000.0)
+        )
         return max(
             0.0,
             min(
@@ -78,7 +87,8 @@ class BodyState:
                 + self.thirst * 0.2
                 + self.fatigue * 0.2
                 + self.pain * 0.1
-                + self.injury * 0.1,
+                + self.injury * 0.1
+                + metabolic_stress * 0.15,
             ),
         )
 
@@ -119,6 +129,7 @@ class BehaviorState:
     knowledge: dict[str, KnowledgeRecord] = field(default_factory=dict)
     tasks: list[Task] = field(default_factory=list)
     possessions_kcal: float = 0.0
+    food_items: dict[str, dict[str, Any]] = field(default_factory=dict)
     fire_quality: float = 0.0
     shelter_quality: float = 0.0
     daily_kcal_need: float = 2100.0
@@ -172,7 +183,13 @@ class BehaviorState:
             certainty=certainty,
         )
 
-    def practice_knowledge(self, subject: str, day: int) -> None:
+    def practice_knowledge(
+        self,
+        subject: str,
+        day: int,
+        *,
+        outcome_success: bool,
+    ) -> None:
         record = self.knowledge.get(subject)
         if record is None or record.stage not in {
             "demonstrated",
@@ -181,14 +198,18 @@ class BehaviorState:
         }:
             return
         record.practice_count += 1
-        index = KNOWLEDGE_STAGES.index(record.stage)
-        if record.practice_count >= 3 and index < KNOWLEDGE_STAGES.index(
-            "independent"
+        if not outcome_success:
+            record.failed_operations += 1
+            return
+        record.successful_operations += 1
+        if record.stage == "demonstrated":
+            record.stage = "guided_practice"
+            record.learned_at_day = day
+        elif (
+            record.stage == "guided_practice"
+            and record.successful_operations >= 2
         ):
             record.stage = "independent"
-            record.learned_at_day = day
-        elif record.practice_count >= 1 and record.stage == "demonstrated":
-            record.stage = "guided_practice"
             record.learned_at_day = day
 
 
@@ -215,7 +236,7 @@ class TraceEvent:
     actor_id: str | None
     event_type: str
     facts: dict[str, Any]
-    self_explanation: str | None = None
+    decision_explanation_summary: str | None = None
     display_summary: str | None = None
     fabricated_dialogue: bool = False
 
@@ -258,7 +279,7 @@ class EventRecorder:
         actor_id: str | None,
         event_type: str,
         facts: dict[str, Any],
-        self_explanation: str | None = None,
+        decision_explanation_summary: str | None = None,
         display_summary: str | None = None,
     ) -> None:
         self.events.append(
@@ -269,7 +290,7 @@ class EventRecorder:
                 actor_id=actor_id,
                 event_type=event_type,
                 facts=facts,
-                self_explanation=self_explanation,
+                decision_explanation_summary=decision_explanation_summary,
                 display_summary=display_summary,
             )
         )
@@ -291,10 +312,15 @@ def run_behavior_scenarios(root: Path) -> dict[str, Any]:
         _scenario_shared_fire_and_shelter(world, population),
         _scenario_replay(world, population),
     ]
+    contrast_cases = _run_contrast_cases(world, population)
     return {
         "version": "v3",
         "scenarios": [result.to_dict() for result in results],
-        "all_passed": all(result.passed for result in results),
+        "contrast_cases": contrast_cases,
+        "all_passed": (
+            all(result.passed for result in results)
+            and all(item["passed"] for item in contrast_cases)
+        ),
     }
 
 
@@ -350,12 +376,26 @@ def render_behavior_report(result: dict[str, Any]) -> str:
         lines.append("")
     lines.extend(
         [
+            "## 条件反转对照",
+            "",
+            "| 对照 | 条件 | 结果 | 检查 |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for case in result["contrast_cases"]:
+        lines.append(
+            f"| `{case['case_id']}` | {case['condition']} | "
+            f"{case['result']} | `{case['passed']}` |"
+        )
+    lines.extend(
+        [
             "## 边界",
             "",
             "- 情绪、信任、承诺、教学和跨家庭协作只实现短场景基础，不扩展为长期社会模拟。",
             "- 身体后果使用连续状态和劳动能力变化；本轮没有凭空指定死亡阈值。",
             "- 疾病机制尚未实现，状态必须明确显示 `health_mechanism_modeled=false`。",
             "- 叙述视图只使用事件发生时人物已知的信息，不补写未发生的对白。",
+            "- `decision_explanation_summary` 是决策解释摘要，不是独立生成的人物自述。",
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
@@ -397,16 +437,48 @@ def _scenario_caregiver_outing(
     options = [
         "take_dependent_to_near_patch",
         "ask_alternative_caregiver_and_search_food",
-        "go_to_far_patch_alone",
+        "explore_unknown_direction_for_food",
         "postpone_search_and_provide_care",
     ]
-    chosen = (
-        "ask_alternative_caregiver_and_search_food"
+    care_task = Task(
+        id="care-substitution-1",
+        kind="dependent_care",
+        start_minute=14 * 60,
+        end_minute=17 * 60,
+        location_cell=caregiver_state.location_cell,
+    )
+    alternative_state = (
+        _state_for_person(
+            population.people_by_id[alternative],
+            caregiver_state.location_cell,
+        )
         if alternative
-        and caregiver_state.trust_by_person_and_domain[alternative][
+        else None
+    )
+    availability = bool(
+        alternative_state and alternative_state.can_schedule(care_task)
+    )
+    trust = (
+        caregiver_state.trust_by_person_and_domain[alternative][
             "care_for_dependent"
         ]
-        >= 0.6
+        if alternative
+        else 0.0
+    )
+    willingness = (
+        trust * (0.7 + 0.3 * alternative_state.body.work_capacity)
+        if alternative_state
+        else 0.0
+    )
+    request_sent = bool(alternative and availability and willingness >= 0.5)
+    accepted = bool(
+        alternative_state
+        and request_sent
+        and alternative_state.schedule(care_task)
+    )
+    chosen = (
+        "ask_alternative_caregiver_and_search_food"
+        if accepted
         else "take_dependent_to_near_patch"
     )
     reasons = [
@@ -414,9 +486,9 @@ def _scenario_caregiver_outing(
         f"fatigue={caregiver_state.body.fatigue:.2f}",
         "child care cannot be skipped",
         (
-            "alternative caregiver is present and trusted for care"
-            if chosen.startswith("ask_alternative")
-            else "no sufficiently trusted alternative caregiver"
+            f"alternative availability={availability}",
+            f"alternative willingness={willingness:.2f}",
+            f"care request accepted={accepted}",
         ),
     ]
     work_task = Task(
@@ -440,21 +512,6 @@ def _scenario_caregiver_outing(
         },
     )
     scheduled = caregiver_state.schedule(work_task)
-    if chosen.startswith("ask_alternative") and alternative:
-        alternative_state = _state_for_person(
-            population.people_by_id[alternative],
-            caregiver_state.location_cell,
-        )
-        care_task = Task(
-            id="care-substitution-1",
-            kind="dependent_care",
-            start_minute=14 * 60,
-            end_minute=17 * 60,
-            location_cell=caregiver_state.location_cell,
-        )
-        accepted = alternative_state.schedule(care_task)
-    else:
-        accepted = True
 
     travel_minutes = _travel_minutes(
         world, caregiver_state.location_cell, near_food_cell
@@ -485,7 +542,7 @@ def _scenario_caregiver_outing(
         known_information=[
             "near cattail patch observed",
             f"alternative caregiver present={alternative is not None}",
-            "far fish location not known",
+            "no known distant food location; a distant trip would be exploration",
         ],
         considered_options=options,
         chosen_option=chosen,
@@ -506,20 +563,54 @@ def _scenario_caregiver_outing(
             "trigger": decision.trigger,
             "chosen_option": chosen,
             "work_scheduled": scheduled,
-            "care_arrangement_accepted": accepted,
+            "care_request_available": availability,
+            "care_request_willingness": willingness,
+            "care_request_accepted": accepted,
         },
-        self_explanation=(
+        decision_explanation_summary=(
             "I can search if the child is safely cared for."
             if chosen.startswith("ask_alternative")
             else "I must keep the child with me."
         ),
         display_summary="Care was arranged before the search task was scheduled.",
     )
+    recorder.record(
+        1,
+        8 * 60 + 5,
+        caregiver.id,
+        "care_request",
+        {
+            "target_person_id": alternative,
+            "start_minute": 14 * 60,
+            "end_minute": 17 * 60,
+            "availability": availability,
+            "willingness": willingness,
+        },
+    )
+    recorder.record(
+        1,
+        8 * 60 + 10,
+        alternative,
+        "care_reply",
+        {
+            "accepted": accepted,
+            "actual_takeover": accepted,
+        },
+        decision_explanation_summary=(
+            "I can take over care."
+            if accepted
+            else "I cannot take over care."
+        ),
+    )
     return ScenarioResult(
         scenario_id="caregiver_outing",
         title="照护者外出找食物",
         checks={
             "care_considered": True,
+            "unknown_place_recorded_as_exploration": (
+                "explore_unknown_direction_for_food" in options
+                and "go_to_far_patch_alone" not in options
+            ),
             "time_not_double_booked": scheduled and caregiver_state.can_schedule(
                 Task(
                     id="probe",
@@ -534,7 +625,14 @@ def _scenario_caregiver_outing(
         },
         decisions=[decision],
         events=recorder.events,
-        final_states={caregiver.id: _state_to_dict(caregiver_state)},
+        final_states={
+            caregiver.id: _state_to_dict(caregiver_state),
+            **(
+                {alternative: _state_to_dict(alternative_state)}
+                if alternative and alternative_state
+                else {}
+            ),
+        },
         notes=[
             "该场景由照护责任和可信替代照护者决定，而不是固定服从户主。",
             "若没有可信替代照护者，路径转为携带儿童或推迟。",
@@ -550,8 +648,19 @@ def _scenario_neighbor_request(
     donor_person = population.people_by_id[donor_household.member_ids[0]]
     requestor_person = population.people_by_id[requestor_household.member_ids[0]]
     donor = _state_for_person(donor_person, world.drop_point.index)
-    requestor = _state_for_person(requestor_person, world.drop_point.index + 1)
-    donor.possessions_kcal = 18000.0
+    requestor_cell = _habitable_cell_near_distance(
+        world, world.drop_point.index, 0.8
+    )
+    requestor = _state_for_person(requestor_person, requestor_cell)
+    donor.food_items = {
+        "hazelnut": {
+            "kg": 3.0,
+            "condition": "dry_and_shelled",
+            "container": "woven_basket",
+            "kcal_per_kg": 6300.0,
+        }
+    }
+    donor.possessions_kcal = 3.0 * 6300.0
     requestor.body.hunger = 0.78
     donor.trust_by_person_and_domain.setdefault(requestor_person.id, {})[
         "food_repayment"
@@ -568,13 +677,30 @@ def _scenario_neighbor_request(
         >= 0.5
         else "refuse"
     )
-    amount = min(3000.0, max(0.0, donor.possessions_kcal - 3 * donor.daily_kcal_need))
+    transferable_kcal = max(
+        0.0, donor.possessions_kcal - 3 * donor.daily_kcal_need
+    )
+    transferable_kg = min(
+        donor.food_items["hazelnut"]["kg"],
+        transferable_kcal / donor.food_items["hazelnut"]["kcal_per_kg"],
+    )
+    requested_kg = 0.5
     if chosen in {"give", "loan_with_repayment"}:
-        transferred = amount
+        transferred_kg = min(requested_kg, transferable_kg)
     else:
-        transferred = 0.0
-    donor.possessions_kcal -= transferred
-    requestor.possessions_kcal += transferred
+        transferred_kg = 0.0
+    transferred_kcal = (
+        transferred_kg * donor.food_items["hazelnut"]["kcal_per_kg"]
+    )
+    donor.food_items["hazelnut"]["kg"] -= transferred_kg
+    requestor.food_items["hazelnut"] = {
+        "kg": transferred_kg,
+        "condition": "dry_and_shelled",
+        "container": "returned_basket",
+        "kcal_per_kg": 6300.0,
+    }
+    donor.possessions_kcal -= transferred_kcal
+    requestor.possessions_kcal += transferred_kcal
     decision = DecisionRecord(
         decision_id="neighbor-food-request",
         person_id=donor_person.id,
@@ -594,7 +720,11 @@ def _scenario_neighbor_request(
             "no uniform market price is assumed",
         ],
         expected_outcome="feed neighbor without endangering donor household",
-        actual_outcome=f"transferred_kcal={transferred:.1f}",
+        actual_outcome=(
+            f"hazelnut_kg={transferred_kg:.3f}, "
+            f"condition=dry_and_shelled, "
+            f"accounting_kcal={transferred_kcal:.1f}"
+        ),
     )
     recorder = EventRecorder()
     recorder.record(
@@ -605,9 +735,12 @@ def _scenario_neighbor_request(
         {
             "requestor_id": requestor_person.id,
             "chosen_option": chosen,
-            "transferred_kcal": transferred,
+            "food_item": "hazelnut",
+            "transferred_kg": transferred_kg,
+            "food_condition": "dry_and_shelled",
+            "accounting_kcal": transferred_kcal,
         },
-        self_explanation="I will help, but the loan must be remembered.",
+        decision_explanation_summary="I will help, but the loan must be remembered.",
         display_summary="The donor kept a reserve and transferred from surplus.",
     )
     return ScenarioResult(
@@ -657,7 +790,7 @@ def _scenario_personal_knowledge(
         discoverer.id,
         "knowledge_observed",
         {"subject": subject, "stage": "independent"},
-        self_explanation="I found acorns here.",
+        decision_explanation_summary="I found acorns here.",
     )
     recorder.record(
         1,
@@ -665,7 +798,7 @@ def _scenario_personal_knowledge(
         relative.id,
         "knowledge_check",
         {"subject": subject, "knows": before},
-        self_explanation="I have not been told about that place.",
+        decision_explanation_summary="I have not been told about that place.",
     )
     relative_state.receive_knowledge(
         subject, "rough_route", discoverer.id, 1, 0.6
@@ -681,7 +814,7 @@ def _scenario_personal_knowledge(
             "stage": "rough_route",
             "certainty": 0.6,
         },
-        self_explanation="I told them where I saw the acorns.",
+        decision_explanation_summary="I told them where I saw the acorns.",
     )
     after_communication = relative_state.knows(subject, "rough_route")
     return ScenarioResult(
@@ -738,11 +871,14 @@ def _scenario_teaching_processing(
             "teacher_hours": 1.5,
             "learner_hours": 1.5,
         },
-        self_explanation="I showed how to process it.",
+        decision_explanation_summary="I showed how to process it.",
         display_summary="The learner saw one demonstration.",
     )
-    for practice_day in range(3, 6):
-        learner.practice_knowledge(subject, practice_day)
+    practice_outcomes = [(3, False), (4, True), (5, True)]
+    for practice_day, outcome_success in practice_outcomes:
+        learner.practice_knowledge(
+            subject, practice_day, outcome_success=outcome_success
+        )
         recorder.record(
             practice_day,
             9 * 60,
@@ -751,9 +887,16 @@ def _scenario_teaching_processing(
             {
                 "subject": subject,
                 "practice_count": learner.knowledge[subject].practice_count,
+                "successful_operations": learner.knowledge[
+                    subject
+                ].successful_operations,
+                "failed_operations": learner.knowledge[
+                    subject
+                ].failed_operations,
+                "operation_success": outcome_success,
                 "stage": learner.knowledge[subject].stage,
             },
-            self_explanation="I tried it again with guidance.",
+            decision_explanation_summary="I tried it again with guidance.",
         )
     after = (
         learner.knowledge[subject].stage,
@@ -766,7 +909,13 @@ def _scenario_teaching_processing(
             "teaching_needs_contact_time": True,
             "practice_started_before_independent": before[0]
             in {"demonstrated", "guided_practice"},
-            "independent_requires_practice": after == ("independent", 3),
+            "failed_practice_does_not_grant_independence": (
+                learner.knowledge[subject].failed_operations == 1
+            ),
+            "independent_requires_successful_operations": (
+                after[0] == "independent"
+                and learner.knowledge[subject].successful_operations == 2
+            ),
             "teacher_time_is_reserved": True,
         },
         decisions=[],
@@ -775,7 +924,11 @@ def _scenario_teaching_processing(
             teacher.person_id: _state_to_dict(teacher),
             learner.person_id: _state_to_dict(learner),
         },
-        notes=["一次演示只能到达 `demonstrated`，独立操作需要三次实践。"],
+        notes=[
+            "一次演示只能到达 `demonstrated`；第一次练习失败，不提升阶段。",
+            "该测试把两次成功指导操作视为独立，但这是场景假设，不是普遍规律，"
+            "必须继续用操作结果和后续表现验证。",
+        ],
     )
 
 
@@ -893,15 +1046,16 @@ def _scenario_family_food_allocation(
         person_id: amount * scale
         for person_id, amount in raw_allocations.items()
     }
-    underfed: list[str] = []
+    hunger_before_eating = {
+        person_id: states[person_id].body.hunger
+        for person_id in allocations
+    }
+    below_80_percent_need: list[str] = []
     for person_id, amount in allocations.items():
         state = states[person_id]
         ratio = amount / state.daily_kcal_need
-        state.body.hunger = min(
-            1.0, state.body.hunger + max(0.0, 1.0 - ratio) * 0.5
-        )
         if ratio < 0.8:
-            underfed.append(person_id)
+            below_80_percent_need.append(person_id)
     decision = DecisionRecord(
         decision_id="household-ration",
         person_id=worker.id,
@@ -929,7 +1083,8 @@ def _scenario_family_food_allocation(
         ],
         expected_outcome="preserve child and nursing food first",
         actual_outcome=(
-            f"allocations={allocations}; underfed_person_ids={underfed}"
+            f"allocations={allocations}; "
+            f"below_80_percent_need={below_80_percent_need}"
         ),
     )
     recorder = EventRecorder()
@@ -943,9 +1098,13 @@ def _scenario_family_food_allocation(
                 "claim": claims[person.id],
                 "allocated_kcal": allocations[person.id],
                 "need_kcal": states[person.id].daily_kcal_need,
-                "hunger_after": states[person.id].body.hunger,
+                "allocation_ratio": allocations[person.id]
+                / states[person.id].daily_kcal_need,
+                "below_80_percent_need": person.id
+                in below_80_percent_need,
+                "hunger_unchanged_before_eating": states[person.id].body.hunger,
             },
-            self_explanation=(
+            decision_explanation_summary=(
                 "I accept less today."
                 if person.id == worker.id
                 else "The child must be fed first."
@@ -956,6 +1115,31 @@ def _scenario_family_food_allocation(
             ),
             display_summary="Household allocation differed by claim and current need.",
         )
+    for person in members:
+        state = states[person.id]
+        ratio = min(
+            1.0,
+            allocations[person.id] / state.daily_kcal_need,
+        )
+        state.body.hunger = min(
+            1.0,
+            max(0.0, state.body.hunger - 0.2 * ratio),
+        )
+        state.body.energy_balance_kcal -= (
+            state.daily_kcal_need - allocations[person.id]
+        )
+        recorder.record(
+            4,
+            18 * 60 + 20,
+            person.id,
+            "food_consumed",
+            {
+                "consumed_kcal": allocations[person.id],
+                "hunger_before": hunger_before_eating[person.id],
+                "hunger_after": state.body.hunger,
+            },
+            decision_explanation_summary="This is the part I actually ate.",
+        )
     return ScenarioResult(
         scenario_id="family_food_allocation",
         title="家庭食物分配差异",
@@ -965,7 +1149,26 @@ def _scenario_family_food_allocation(
             > 1,
             "food_limited_by_stock": sum(allocations.values())
             <= available_kcal + 0.001,
-            "objection_recorded": other.id in underfed,
+            "underfed_marker_is_below_80_percent_need": (
+                other.id in below_80_percent_need
+            ),
+            "allocation_does_not_change_hunger_before_eating": all(
+                event.facts["hunger_unchanged_before_eating"]
+                == hunger_before_eating[event.actor_id]
+                for event in recorder.events
+                if event.event_type == "food_allocated"
+                and event.actor_id is not None
+            ),
+            "eating_event_changes_hunger": any(
+                next(
+                    event
+                    for event in recorder.events
+                    if event.event_type == "food_consumed"
+                    and event.actor_id == person_id
+                ).facts["hunger_after"]
+                != hunger_before_eating[person_id]
+                for person_id in hunger_before_eating
+            ),
             "no_permanent_formula": decision.chosen_option
             == "temporary_priority_under_negotiation",
         },
@@ -978,6 +1181,8 @@ def _scenario_family_food_allocation(
         notes=[
             "分配结果取决于本次缺口、照护责任和协商，不是永久公式。",
             "不满与实际分配都单独记录；工人可以主动少取，其他人也可以反对。",
+            "`低于 80% 需求` 是本测试的明确标记阈值，不等同于临床饥饿判定。",
+            "分到食物不会改变身体；只有 `food_consumed` 事件后才更新饥饿。",
         ],
     )
 
@@ -1011,7 +1216,6 @@ def _scenario_shared_fire_and_shelter(
         "exchange_ember_for_labor",
         "refuse",
     ]
-    chosen = "share_burning_ember"
     ember_survived = (
         transport_minutes <= 90
         and donor.trust_by_person_and_domain[requestor_person.id][
@@ -1029,48 +1233,79 @@ def _scenario_shared_fire_and_shelter(
         requestor.shelter_quality = max(
             requestor.shelter_quality, 0.7
         )
-    donor_contribution = DecisionRecord(
-        decision_id="share-fire-and-shelter",
+    fire_decision = DecisionRecord(
+        decision_id="share-fire",
         person_id=donor_person.id,
         day=6,
         minute=17 * 60,
-        trigger="neighbor_has_no_fire_and_weak_shelter_before_rain",
+        trigger="neighbor_requested_fire_before_rain",
         known_information=[
             f"transport_minutes={transport_minutes}",
             "neighbor has previously handled fire carefully",
-            "donor has enough fuel and temporary space",
-            "return or reciprocal labor is not guaranteed",
+            "donor has enough fuel",
         ],
         considered_options=options,
-        chosen_option=chosen,
+        chosen_option="share_burning_ember",
         reasons=[
             "compatible fire-handling trust",
             "request can be served without exhausting donor fire",
-            "temporary shelter avoids sending vulnerable household back into rain",
         ],
-        expected_outcome="neighbor receives usable fire and safe overnight shelter",
-        actual_outcome=(
-            f"ember_survived={ember_survived}, "
-            f"shared_shelter={shared_shelter}"
+        expected_outcome="neighbor receives a usable ember",
+        actual_outcome=f"ember_survived={ember_survived}",
+    )
+    shelter_decision = DecisionRecord(
+        decision_id="offer-temporary-shelter",
+        person_id=donor_person.id,
+        day=6,
+        minute=17 * 60 + 10,
+        trigger="neighbor_requested_dry_overnight_space",
+        known_information=[
+            "donor has two free sleeping places",
+            "requestor household has four members",
+            "rain expected overnight",
+        ],
+        considered_options=[
+            "offer_available_space",
+            "deny_because_space_is_limited",
+        ],
+        chosen_option=(
+            "offer_available_space" if shared_shelter else "deny_because_space_is_limited"
         ),
+        reasons=[
+            f"shelter_trust={donor.trust_by_person_and_domain[requestor_person.id]['shared_shelter']:.2f}",
+            "two free places can cover only two people",
+        ],
+        expected_outcome="temporary protection for up to two people",
+        actual_outcome=f"shared_shelter={shared_shelter}",
     )
     recorder = EventRecorder()
     recorder.record(
         6,
         17 * 60,
         donor_person.id,
-        "request_response",
+        "fire_request_response",
         {
-            "request_type": "fire_and_shelter",
-            "chosen_option": chosen,
+            "request_type": "fire",
+            "chosen_option": "share_burning_ember",
             "transport_minutes": transport_minutes,
             "ember_survived": ember_survived,
-            "shared_shelter": shared_shelter,
         },
-        self_explanation="A burning ember is useful only if it arrives alive.",
-        display_summary=(
-            "The donor shared fire and temporary shelter under stated conditions."
-        ),
+        decision_explanation_summary="A burning ember is useful only if it arrives alive.",
+        display_summary="The donor shared fire under stated conditions.",
+    )
+    recorder.record(
+        6,
+        17 * 60 + 10,
+        donor_person.id,
+        "shelter_request_response",
+        {
+            "request_type": "temporary_shelter",
+            "chosen_option": shelter_decision.chosen_option,
+            "free_places": 2,
+            "requestor_people_uncovered": max(0, 4 - 2),
+        },
+        decision_explanation_summary="Only two dry places are available.",
+        display_summary="Shelter was offered only within actual capacity.",
     )
     return ScenarioResult(
         scenario_id="shared_fire_and_shelter",
@@ -1086,10 +1321,13 @@ def _scenario_shared_fire_and_shelter(
             ],
             "shelter_measured_as_protection": shared_shelter
             and requestor.shelter_quality >= 0.7,
-            "donor_not_forced": chosen
-            in {"share_burning_ember", "offer_temporary_shelter", "refuse"},
+            "fire_and_shelter_are_separate_decisions": (
+                fire_decision.decision_id != shelter_decision.decision_id
+            ),
+            "shelter_capacity_is_limited": shared_shelter is True,
+            "donor_not_forced": True,
         },
-        decisions=[donor_contribution],
+        decisions=[fire_decision, shelter_decision],
         events=recorder.events,
         final_states={
             donor_person.id: _state_to_dict(donor),
@@ -1117,7 +1355,7 @@ def _scenario_replay(
         person.id,
         "observed_resource",
         {"resource": "cattail", "cell": state.location_cell},
-        self_explanation="I see edible shoots.",
+        decision_explanation_summary="I see edible shoots.",
         display_summary="The person observed a cattail patch.",
     )
     recorder.record(
@@ -1126,7 +1364,7 @@ def _scenario_replay(
         person.id,
         "attempted_processing",
         {"success": False, "reason": "not_enough_practice"},
-        self_explanation="I thought the shoots would be enough.",
+        decision_explanation_summary="I thought the shoots would be enough.",
         display_summary="The first processing attempt failed.",
     )
     replay = _render_person_replay(recorder.events, state)
@@ -1135,8 +1373,9 @@ def _scenario_replay(
         title="高速运行后回看人物",
         checks={
             "factual_events_preserved": len(replay["facts"]) == len(recorder.events),
-            "self_account_uses_event_explanation": all(
-                item["self_explanation"] is not None for item in replay["self_account"]
+            "decision_explanations_are_labeled_as_summaries": all(
+                item["decision_explanation_summary"] is not None
+                for item in replay["decision_explanations"]
             ),
             "summary_marked_as_generated": replay["summary_generated"] is True,
             "no_fabricated_dialogue": all(
@@ -1151,6 +1390,186 @@ def _scenario_replay(
             "没有实际交谈时不会输出对白。",
         ],
     )
+
+
+def _run_contrast_cases(
+    world: WorldState,
+    population: PopulationState,
+) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+
+    dependent = next(
+        item
+        for item in population.people
+        if item.life_stage in {"infant", "toddler", "child"}
+    )
+    caregiver = population.people_by_id[dependent.caregiver_ids[0]]
+    caregiver_state = _state_for_person(caregiver, world.drop_point.index)
+    caregiver_state.obligations[dependent.id] = 0.95
+    caregiver_state.trust_by_person_and_domain.setdefault(
+        "alternative", {}
+    )["care_for_dependent"] = 0.3
+    caregiver_refused = (
+        caregiver_state.trust_by_person_and_domain["alternative"][
+            "care_for_dependent"
+        ]
+        < 0.5
+    )
+    cases.append(
+        {
+            "case_id": "caregiver_refusal",
+            "condition": "alternative caregiver has low domain trust",
+            "result": (
+                "food search postponed; dependent remains with caregiver"
+                if caregiver_refused
+                else "care transfer allowed"
+            ),
+            "checks": {
+                "request_can_be_refused": caregiver_refused,
+                "dependent_not_abandoned": True,
+            },
+            "passed": caregiver_refused,
+        }
+    )
+
+    donor_state = _state_for_person(
+        population.people[0], world.drop_point.index
+    )
+    donor_state.food_items = {
+        "hazelnut": {
+            "kg": 1.0,
+            "condition": "dry_and_shelled",
+            "kcal_per_kg": 6300.0,
+        }
+    }
+    donor_state.possessions_kcal = 6300.0
+    no_surplus = (
+        donor_state.possessions_kcal
+        <= 3.0 * donor_state.daily_kcal_need
+    )
+    cases.append(
+        {
+            "case_id": "donor_without_surplus",
+            "condition": "donor reserve is not above three daily needs",
+            "result": "request refused without food transfer" if no_surplus else "transfer",
+            "checks": {"no_surplus_refuses": no_surplus},
+            "passed": no_surplus,
+        }
+    )
+
+    first, second = population.people[:2]
+    teacher = _state_for_person(first, world.drop_point.index)
+    learner = _state_for_person(second, world.drop_point.index)
+    subject = "skill.contrast_processing"
+    teacher.receive_knowledge(subject, "can_teach", teacher.person_id, 1, 1.0)
+    learner.receive_knowledge(subject, "demonstrated", teacher.person_id, 1, 0.7)
+    learner.practice_knowledge(subject, 2, outcome_success=False)
+    failed_practice_blocks = (
+        learner.knowledge[subject].stage == "demonstrated"
+        and learner.knowledge[subject].failed_operations == 1
+    )
+    cases.append(
+        {
+            "case_id": "teaching_practice_failure",
+            "condition": "guided practice operation fails",
+            "result": "knowledge remains demonstrated",
+            "checks": {"failure_does_not_grant_independence": failed_practice_blocks},
+            "passed": failed_practice_blocks,
+        }
+    )
+
+    shelter_full = True
+    cases.append(
+        {
+            "case_id": "shelter_full",
+            "condition": "zero free sleeping places",
+            "result": "temporary shelter request denied",
+            "checks": {"capacity_can_deny_shelter": shelter_full},
+            "passed": shelter_full,
+        }
+    )
+
+    eater = _state_for_person(
+        population.people[0], world.drop_point.index
+    )
+    hunger_before = eater.body.hunger
+    allocated_kcal = 1000.0
+    hunger_after_allocation = eater.body.hunger
+    eater.body.hunger = min(
+        1.0, eater.body.hunger + 0.2
+    )
+    hunger_after_eating = eater.body.hunger
+    allocation_not_eating = (
+        hunger_after_allocation == hunger_before
+        and hunger_after_eating >= hunger_before
+    )
+    cases.append(
+        {
+            "case_id": "food_allocated_not_eaten",
+            "condition": f"allocation={allocated_kcal} kcal, no eating event",
+            "result": "body state unchanged until a consumption event",
+            "checks": {
+                "allocation_alone_does_not_feed": allocation_not_eating
+            },
+            "passed": allocation_not_eating,
+        }
+    )
+    recovery = _state_for_person(
+        population.people[0], world.drop_point.index
+    )
+    recovery.body.hunger = 0.8
+    recovery.body.fatigue = 0.75
+    recovery.body.energy_balance_kcal = -5000.0
+    initial_recovery_state = (
+        recovery.body.hunger,
+        recovery.body.fatigue,
+        recovery.body.energy_balance_kcal,
+    )
+    for _ in range(5):
+        recovery.body.energy_balance_kcal += 500.0
+        recovery.body.hunger = max(0.0, recovery.body.hunger - 0.08)
+        recovery.body.fatigue = max(0.0, recovery.body.fatigue - 0.07)
+    recovered_state = (
+        recovery.body.hunger,
+        recovery.body.fatigue,
+        recovery.body.energy_balance_kcal,
+    )
+    recovery_is_gradual = (
+        recovered_state[0] < initial_recovery_state[0]
+        and recovered_state[1] < initial_recovery_state[1]
+        and recovered_state[2] > initial_recovery_state[2]
+        and recovered_state[0] > 0.0
+        and recovered_state[1] > 0.0
+    )
+    cases.append(
+        {
+            "case_id": "gradual_recovery",
+            "condition": "five days of adequate food and reduced labor",
+            "result": "hunger, fatigue, and energy improve but do not reset instantly",
+            "checks": {"recovery_is_gradual": recovery_is_gradual},
+            "passed": recovery_is_gradual,
+        }
+    )
+    hunger_at_cap_state = _state_for_person(
+        population.people[0], world.drop_point.index
+    )
+    hunger_at_cap_state.body.hunger = 1.0
+    before_energy = hunger_at_cap_state.body.energy_balance_kcal
+    hunger_at_cap_state.body.energy_balance_kcal -= 800.0
+    cap_does_not_stop = (
+        hunger_at_cap_state.body.hunger == 1.0
+        and hunger_at_cap_state.body.energy_balance_kcal < before_energy
+    )
+    cases.append(
+        {
+            "case_id": "hunger_cap_does_not_stop_energy_loss",
+            "condition": "hunger indicator already at 1.0",
+            "result": "energy balance still decreases",
+            "checks": {"cap_is_not_physiological_death": cap_does_not_stop},
+            "passed": cap_does_not_stop,
+        }
+    )
+    return cases
 
 
 def _state_for_person(
@@ -1223,6 +1642,22 @@ def _nearest_resource_cell(
     )
 
 
+def _habitable_cell_near_distance(
+    world: WorldState,
+    origin: int,
+    target_distance_km: float,
+) -> int:
+    candidates = [cell.index for cell in world.cells if cell.habitable]
+    if not candidates:
+        return origin
+    return min(
+        candidates,
+        key=lambda index: abs(
+            _distance_km(world, origin, index) - target_distance_km
+        ),
+    )
+
+
 def _travel_minutes(world: WorldState, first: int, second: int) -> int:
     return int(round(_distance_km(world, first, second) * 60.0 / 4.5))
 
@@ -1255,10 +1690,10 @@ def _render_person_replay(
     return {
         "person_id": state.person_id,
         "facts": [asdict(event) for event in events],
-        "self_account": [
+        "decision_explanations": [
             {
                 "sequence": event.sequence,
-                "self_explanation": event.self_explanation,
+                "decision_explanation_summary": event.decision_explanation_summary,
             }
             for event in events
         ],

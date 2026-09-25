@@ -18,6 +18,7 @@
 - [v3 开局生存核验](versions/v3/OPENING_SURVIVAL_REVIEW.md)
 - [v3 初始化一致性检查](versions/v3/INITIALIZATION_CONSISTENCY_REVIEW.md)
 - [v3 人物与家庭短场景](versions/v3/BEHAVIOR_SCENARIOS.md)
+- [v3 七天整合诊断](versions/v3/SEVEN_DAY_INTEGRATION.md)
 - [v3 变更记录](versions/v3/CHANGES.md)
 
 ## v1 保留

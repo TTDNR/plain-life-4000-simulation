@@ -35,7 +35,7 @@ class BehaviorScenarioTests(unittest.TestCase):
             scenario_ids,
         )
 
-    def test_replay_keeps_fact_self_account_and_summary_separate(self) -> None:
+    def test_replay_keeps_facts_summaries_and_narrative_separate(self) -> None:
         replay = next(
             item
             for item in self.result["scenarios"]

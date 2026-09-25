@@ -7,6 +7,7 @@
 - 修正气候、投放、个人知识、资源账、季节损失、水具和取火证据。
 - 第一批个人行为短场景已经实现并测试。
 - 第二批家庭照护、分配、请求、共享火和临时住所短场景已经实现并测试。
+- 4000 人七天整合诊断已经完成，身体能力会反馈到后续劳动。
 - 固定人口年度压力测试继续保留为诊断。
 
 ## 尚未完成
@@ -22,5 +23,5 @@
 - [生存压力测试](OPENING_SURVIVAL_REVIEW.md)
 - [初始化一致性](INITIALIZATION_CONSISTENCY_REVIEW.md)
 - [人物与家庭短场景](BEHAVIOR_SCENARIOS.md)
+- [七天整合诊断](SEVEN_DAY_INTEGRATION.md)
 - [审计阻断项](PHASE1_AUDIT.md)
-

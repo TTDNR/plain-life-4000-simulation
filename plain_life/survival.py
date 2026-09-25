@@ -105,6 +105,11 @@ class HouseholdRuntime:
     last_water_vessel_attempt_day: int = 0
     water_vessel_failure_reasons: dict[str, int] = field(default_factory=dict)
     water_vessel_blocked_reason: str | None = None
+    body_states: dict[str, Any] = field(default_factory=dict)
+    work_capacity_multiplier: float = 1.0
+    last_consumed_kcal: float = 0.0
+    last_water_ratio: float = 1.0
+    last_labour_hours: float = 0.0
 
     @property
     def skills(self) -> set[str]:
@@ -131,6 +136,7 @@ class SurvivalRunResult:
     harvest_details: dict[str, dict[str, float]]
     acquisition_paths: dict[str, dict[str, Any]]
     distribution_diagnostics: dict[str, Any]
+    integration_diagnostics: dict[str, Any]
     resource_consumption_kg: dict[str, float]
     migration_summary: dict[str, Any]
     final_resource_stock_kg: dict[str, float]
@@ -150,6 +156,7 @@ class SurvivalRunResult:
             "harvest_details": self.harvest_details,
             "acquisition_paths": self.acquisition_paths,
             "distribution_diagnostics": self.distribution_diagnostics,
+            "integration_diagnostics": self.integration_diagnostics,
             "resource_consumption_kg": self.resource_consumption_kg,
             "migration_summary": self.migration_summary,
             "final_resource_stock_kg": self.final_resource_stock_kg,
@@ -160,6 +167,7 @@ def run_survival_validation(
     initial_world: WorldState,
     population: PopulationState,
     days: int = 365,
+    behavior_states: dict[str, Any] | None = None,
 ) -> SurvivalRunResult:
     world = initial_world.clone()
     start_fingerprint = initial_world.initial_fingerprint
@@ -176,6 +184,13 @@ def run_survival_validation(
         water_distance_cache,
         camp_score_cache,
     )
+    if behavior_states:
+        for runtime in runtimes.values():
+            runtime.body_states = {
+                person.id: behavior_states[person.id]
+                for person in runtime.members
+                if person.id in behavior_states
+            }
     metrics: list[DayMetric] = []
     resource_consumption = {
         resource_id: 0.0
@@ -201,6 +216,8 @@ def run_survival_validation(
     camps_after_day_one_selection: set[int] = set()
 
     for day in range(1, days + 1):
+        if behavior_states:
+            _apply_body_constraints(runtimes, behavior_states)
         weather = _advance_day(world)
         _prepare_household_runtimes(
             world,
@@ -229,6 +246,8 @@ def run_survival_validation(
             time_account,
         )
         metrics.append(day_metric)
+        if behavior_states:
+            _update_body_after_day(runtimes, behavior_states, day)
 
     window_results = _summarize_windows(metrics)
     path_results = _evaluate_paths(
@@ -254,6 +273,9 @@ def run_survival_validation(
         daily_harvest_details,
         time_account,
     )
+    integration_diagnostics = _summarize_integration(
+        behavior_states, runtimes, metrics
+    )
     migration_summary = {
         "households_that_migrated": sum(
             runtime.migrations > 0 for runtime in runtimes.values()
@@ -277,7 +299,11 @@ def run_survival_validation(
     }
     end_fingerprint = world.fingerprint()
     return SurvivalRunResult(
-        test_kind="fixed_population_demand_pressure_test",
+        test_kind=(
+            "dynamic_body_short_integration"
+            if behavior_states
+            else "fixed_population_demand_pressure_test"
+        ),
         days=days,
         start_environment_fingerprint=start_fingerprint,
         end_environment_fingerprint=end_fingerprint,
@@ -297,6 +323,7 @@ def run_survival_validation(
         },
         acquisition_paths=acquisition_paths,
         distribution_diagnostics=distribution_diagnostics,
+        integration_diagnostics=integration_diagnostics,
         resource_consumption_kg={
             key: round(value, 3)
             for key, value in sorted(resource_consumption.items())
@@ -594,6 +621,9 @@ def _simulate_day(
         )
         hours -= food_hours_used
         time_account["unallocated_or_rest"] += max(0.0, hours)
+        runtime.last_labour_hours = (
+            potential_hours - care_hours - hours
+        )
         food_available_before_consumption = _store_kcal(world, runtime)
         consumed = _consume_food(world, runtime, demand)
         _spoil_food(runtime)
@@ -625,6 +655,8 @@ def _simulate_day(
         fire_quality_total += runtime.fire_quality
         tool_quality_total += runtime.tool_quality
         runtime.last_food_ratio = ratio
+        runtime.last_consumed_kcal = consumed
+        runtime.last_water_ratio = water_ratio
         food_consumed += consumed
         household_ratio = consumed / demand if demand else 1.0
         household_food_ratios.append(household_ratio)
@@ -694,6 +726,150 @@ def _simulate_day(
     )
 
 
+def _apply_body_constraints(
+    runtimes: dict[str, HouseholdRuntime],
+    behavior_states: dict[str, Any],
+) -> None:
+    for runtime in runtimes.values():
+        capacities = [
+            behavior_states[person.id].body.work_capacity
+            for person in runtime.members
+            if person.id in behavior_states
+            and person.life_stage in {"adult", "elder"}
+        ]
+        runtime.work_capacity_multiplier = (
+            mean(capacities) if capacities else 0.2
+        )
+
+
+def _update_body_after_day(
+    runtimes: dict[str, HouseholdRuntime],
+    behavior_states: dict[str, Any],
+    day: int,
+) -> None:
+    for runtime in runtimes.values():
+        state_members = [
+            behavior_states[person.id]
+            for person in runtime.members
+            if person.id in behavior_states
+        ]
+        active_states = [
+            state
+            for state in state_members
+            if state.life_stage in {"adult", "elder"}
+        ]
+        labour_per_active = (
+            runtime.last_labour_hours / max(1, len(active_states))
+        )
+        effective_needs = {
+            state.person_id: state.daily_kcal_need
+            + (
+                max(0.0, labour_per_active - 4.0) * 45.0
+                if state in active_states
+                else 0.0
+            )
+            for state in state_members
+        }
+        total_need = sum(effective_needs.values())
+        for state in state_members:
+            effective_need = effective_needs[state.person_id]
+            intake = (
+                runtime.last_consumed_kcal
+                * effective_need
+                / max(1.0, total_need)
+            )
+            deficit = effective_need - intake
+            state.body.energy_balance_kcal -= deficit
+            intake_ratio = min(1.0, intake / max(1.0, effective_need))
+            state.body.hunger = max(
+                0.0, state.body.hunger - 0.2 * intake_ratio
+            )
+            if deficit > 0.0:
+                state.body.hunger = min(
+                    1.0,
+                    state.body.hunger
+                    + 0.12 * deficit / state.daily_kcal_need,
+                )
+            if runtime.last_water_ratio < 1.0:
+                state.body.thirst = min(
+                    1.0,
+                    state.body.thirst
+                    + (1.0 - runtime.last_water_ratio) * 0.5,
+                )
+            else:
+                state.body.thirst = max(0.0, state.body.thirst - 0.12)
+            if state in active_states:
+                state.body.fatigue = min(
+                    1.0,
+                    state.body.fatigue
+                    + labour_per_active / 8.0 * 0.12,
+                )
+                state.body.sleep_debt_hours += max(
+                    0.0, labour_per_active - 8.0
+                )
+            else:
+                state.body.fatigue = min(
+                    1.0, state.body.fatigue + 0.05
+                )
+            if (
+                runtime.last_food_ratio >= 0.95
+                and runtime.last_water_ratio >= 0.95
+                and runtime.last_labour_hours <= 4.0
+            ):
+                state.body.fatigue = max(
+                    0.0, state.body.fatigue - 0.08
+                )
+
+
+def _summarize_integration(
+    behavior_states: dict[str, Any] | None,
+    runtimes: dict[str, HouseholdRuntime],
+    metrics: list[DayMetric],
+) -> dict[str, Any]:
+    if not behavior_states:
+        return {
+            "enabled": False,
+            "reason": "Run without body-state feedback.",
+        }
+    capacities = [
+        state.body.work_capacity for state in behavior_states.values()
+    ]
+    hunger_values = [
+        state.body.hunger for state in behavior_states.values()
+    ]
+    thirst_values = [
+        state.body.thirst for state in behavior_states.values()
+    ]
+    energy_values = [
+        state.body.energy_balance_kcal
+        for state in behavior_states.values()
+    ]
+    return {
+        "enabled": True,
+        "people": len(behavior_states),
+        "minimum_work_capacity": round(min(capacities), 4),
+        "mean_work_capacity": round(mean(capacities), 4),
+        "people_with_hunger_at_cap": sum(
+            state.body.hunger >= 0.999 for state in behavior_states.values()
+        ),
+        "people_with_thirst_at_cap": sum(
+            state.body.thirst >= 0.999 for state in behavior_states.values()
+        ),
+        "total_energy_balance_kcal": round(sum(energy_values), 3),
+        "minimum_energy_balance_kcal": round(min(energy_values), 3),
+        "maximum_hunger": round(max(hunger_values), 4),
+        "maximum_thirst": round(max(thirst_values), 4),
+        "deaths": 0,
+        "death_modeled": False,
+        "disease_modeled": False,
+        "people_capacity_limited_on_final_day": sum(
+            state.body.work_capacity < 0.5
+            for state in behavior_states.values()
+        ),
+        "days": len(metrics),
+    }
+
+
 def _available_labour_hours(
     runtime: HouseholdRuntime,
 ) -> tuple[float, float, float]:
@@ -709,7 +885,9 @@ def _available_labour_hours(
             base = 8.0
         else:
             base = 4.0
-        hours_by_person[person.id] = base * person.mobility
+        hours_by_person[person.id] = (
+            base * person.mobility * runtime.work_capacity_multiplier
+        )
 
     potential_hours = max(0.0, sum(hours_by_person.values()))
     care_hours = {

@@ -59,4 +59,5 @@ v1 的“自然再生量可能支持长期生存”判断已被撤销。该判�
 - [v3 生存压力测试](v3/OPENING_SURVIVAL_REVIEW.md)
 - [v3 初始化一致性](v3/INITIALIZATION_CONSISTENCY_REVIEW.md)
 - [v3 人物与家庭短场景](v3/BEHAVIOR_SCENARIOS.md)
+- [v3 七天整合诊断](v3/SEVEN_DAY_INTEGRATION.md)
 - [v3 审计阻断项](v3/PHASE1_AUDIT.md)

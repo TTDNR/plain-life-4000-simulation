@@ -43,6 +43,7 @@
 ```powershell
 py -3.12 -m unittest discover -s tests -v
 py -3.12 tools\run_behavior_scenarios.py
+py -3.12 tools\run_integration_diagnostic.py
 py -3.12 tools\run_phase1.py --version v3 --days 365
 ```
 
