@@ -476,14 +476,23 @@ def audit_survival(survival: Mapping[str, Any]) -> list[Finding]:
         if not window:
             continue
         path = f"survival.windows.{window_id}"
-        if window.get("status") != "evaluated":
+        window_status = window.get("status")
+        if window_status != "evaluated":
             findings.append(
                 Finding(
                     section,
                     "blocker",
-                    "window_not_evaluated",
+                    (
+                        "window_not_evaluated"
+                        if window_status == "unresolved"
+                        else "window_failed"
+                    ),
                     f"{path}.status",
-                    "Each required time window must be evaluated before long simulation.",
+                    (
+                        "Each required time window must be evaluated before long simulation."
+                        if window_status == "unresolved"
+                        else "The evaluated time window did not pass its survival checks."
+                    ),
                 )
             )
             continue
@@ -580,14 +589,23 @@ def audit_survival(survival: Mapping[str, Any]) -> list[Finding]:
                             + ".",
                         )
                     )
-            if path_data.get("status") != "evaluated":
+            path_status = path_data.get("status")
+            if path_status != "evaluated":
                 findings.append(
                     Finding(
                         section,
                         "blocker",
-                        "path_not_evaluated",
+                        (
+                            "path_not_evaluated"
+                            if path_status == "unresolved"
+                            else "path_failed"
+                        ),
                         f"{path}.status",
-                        "Each survival path must be evaluated against the environment.",
+                        (
+                            "Each survival path must be evaluated against the environment."
+                            if path_status == "unresolved"
+                            else "The evaluated survival path did not pass against the environment."
+                        ),
                     )
                 )
                 continue
