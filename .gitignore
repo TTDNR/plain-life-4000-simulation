@@ -1,0 +1,30 @@
+# Local configuration and secrets
+.env
+*.local
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generic build and generated output locations
+build/
+dist/
+out/
+output/
+artifacts/
+logs/
+tmp/
+temp/
+
+# Common dependency and cache directories
+.cache/
+.venv/
+venv/
+node_modules/
+__pycache__/
+
+# Large temporary data
+*.log
+*.tmp
