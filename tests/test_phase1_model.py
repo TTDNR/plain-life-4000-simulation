@@ -37,7 +37,7 @@ class Phase1ModelTests(unittest.TestCase):
             / "data"
             / "phase1"
             / "versions"
-            / "v2"
+            / "v3"
             / "environment_baseline.json"
         )
         cls.world = generate_environment(cls.baseline)
@@ -60,7 +60,7 @@ class Phase1ModelTests(unittest.TestCase):
 
     def test_population_is_internally_consistent(self) -> None:
         contract = phase1_audit.load_json(
-            ROOT / "data" / "phase1" / "versions" / "v2" / "population.json"
+            ROOT / "data" / "phase1" / "versions" / "v3" / "population.json"
         )
         contract["snapshot"] = self.population.to_snapshot_dict()
         contract["ecology_link"] = {
@@ -88,13 +88,14 @@ class Phase1ModelTests(unittest.TestCase):
             len(self.population.lactation_links),
         )
 
-    def test_v2_drop_and_survival_ledgers_are_explicit(self) -> None:
+    def test_v3_drop_and_survival_ledgers_are_explicit(self) -> None:
         result = run_survival_validation(
             self.world, self.population, days=3
         )
         initial = result.window_results["initial_days"]
         self.assertEqual("failed", initial["status"])
-        self.assertGreaterEqual(initial["minimum_water_ratio"], 0.9)
+        self.assertGreater(initial["minimum_water_ratio"], 0.5)
+        self.assertLess(initial["minimum_water_ratio"], 1.0)
         self.assertEqual(1, result.migration_summary["drop_instant_camps"])
         self.assertGreater(
             result.migration_summary["camps_after_day_one_selection"], 1

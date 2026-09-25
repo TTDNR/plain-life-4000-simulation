@@ -89,9 +89,22 @@ class HouseholdRuntime:
     knowledge_sharing_hours: float = 0.0
     shelter_completed_day: int | None = None
     fire_first_success_day: int | None = None
+    fire_first_attempt_day: int | None = None
+    fire_attempts: int = 0
+    fire_failures: int = 0
+    fire_failure_reasons: dict[str, int] = field(default_factory=dict)
+    fire_days_without_time: int = 0
+    fire_material_search_failures: int = 0
+    last_fire_material_search_day: int = 0
     tool_completed_day: int | None = None
     water_container_capacity_l: float = 0.0
     water_container_built_day: int | None = None
+    water_vessel_attempts: int = 0
+    water_vessel_failures: int = 0
+    water_vessel_maker_ids: list[str] = field(default_factory=list)
+    last_water_vessel_attempt_day: int = 0
+    water_vessel_failure_reasons: dict[str, int] = field(default_factory=dict)
+    water_vessel_blocked_reason: str | None = None
 
     @property
     def skills(self) -> set[str]:
@@ -183,6 +196,8 @@ def run_survival_validation(
     }
     distribution_observations: list[dict[str, float]] = []
     water_method_counts: dict[str, int] = {}
+    daily_harvest_details: list[dict[str, float | str]] = []
+    time_account: dict[str, float] = defaultdict(float)
     camps_after_day_one_selection: set[int] = set()
 
     for day in range(1, days + 1):
@@ -210,6 +225,8 @@ def run_survival_validation(
             harvest_details,
             distribution_observations,
             water_method_counts,
+            daily_harvest_details,
+            time_account,
         )
         metrics.append(day_metric)
 
@@ -234,6 +251,8 @@ def run_survival_validation(
         harvest_details,
         world.baseline.raw,
         water_method_counts,
+        daily_harvest_details,
+        time_account,
     )
     migration_summary = {
         "households_that_migrated": sum(
@@ -468,6 +487,8 @@ def _simulate_day(
     harvest_details: dict[str, dict[str, float]],
     distribution_observations: list[dict[str, float]],
     water_method_counts: dict[str, int],
+    daily_harvest_details: list[dict[str, float | str]],
+    time_account: dict[str, float],
 ) -> DayMetric:
     food_demand = 0.0
     food_acquired = 0.0
@@ -504,14 +525,18 @@ def _simulate_day(
                 ]
             )
         )
-        hours = _available_labour_hours(runtime)
+        hours, care_hours, potential_hours = _available_labour_hours(runtime)
+        time_account["care"] += care_hours
+        time_account["potential"] += potential_hours
         migration_hours = min(hours, runtime.migration_travel_debt_hours)
         hours -= migration_hours
+        time_account["migration_travel"] += migration_hours
         runtime.migration_travel_debt_hours = max(
             0.0, runtime.migration_travel_debt_hours - migration_hours
         )
         knowledge_hours = min(hours, runtime.knowledge_sharing_hours)
         hours -= knowledge_hours
+        time_account["exploration_and_communication"] += knowledge_hours
         runtime.knowledge_sharing_hours = max(
             0.0, runtime.knowledge_sharing_hours - knowledge_hours
         )
@@ -523,27 +548,33 @@ def _simulate_day(
             day,
             water_distance_cache,
         )
+        time_account["water"] += water_hours
         hours -= water_hours
 
         if day <= 3:
             task_hours = min(hours * 0.25, 2.0)
             _advance_shelter(world, runtime, task_hours)
             hours -= task_hours
+            time_account["shelter"] += task_hours
         if day == 1:
             task_hours = min(hours * 0.15, 1.0)
             _advance_tools(world, runtime, task_hours)
             hours -= task_hours
+            time_account["tools"] += task_hours
         if day >= 2:
             task_hours = min(hours * 0.15, 1.0)
             _advance_fire(world, runtime, task_hours, day)
             hours -= task_hours
+            time_account["fire"] += task_hours
         if day > 3:
             if runtime.shelter_quality < 0.8:
                 task_hours = min(hours * 0.18, 1.2)
                 _advance_shelter(world, runtime, task_hours)
                 hours -= task_hours
+                time_account["shelter"] += task_hours
             maintenance = min(hours, 0.35)
             hours -= maintenance
+            time_account["fire_maintenance"] += maintenance
 
         target_kcal = demand + max(
             0.0,
@@ -551,14 +582,18 @@ def _simulate_day(
             * _storage_target_fraction(day, world.start_day_of_year)
             - _store_kcal(world, runtime),
         )
-        acquired = _harvest_food(
+        acquired, food_hours_used = _harvest_food(
             world,
             runtime,
             hours,
             target_kcal,
             resource_consumption,
             harvest_details,
+            daily_harvest_details,
+            time_account,
         )
+        hours -= food_hours_used
+        time_account["unallocated_or_rest"] += max(0.0, hours)
         food_available_before_consumption = _store_kcal(world, runtime)
         consumed = _consume_food(world, runtime, demand)
         _spoil_food(runtime)
@@ -659,7 +694,9 @@ def _simulate_day(
     )
 
 
-def _available_labour_hours(runtime: HouseholdRuntime) -> float:
+def _available_labour_hours(
+    runtime: HouseholdRuntime,
+) -> tuple[float, float, float]:
     hours_by_person: dict[str, float] = {}
     for person in runtime.members:
         if person.life_stage == "infant" or person.life_stage == "toddler":
@@ -674,6 +711,7 @@ def _available_labour_hours(runtime: HouseholdRuntime) -> float:
             base = 4.0
         hours_by_person[person.id] = base * person.mobility
 
+    potential_hours = max(0.0, sum(hours_by_person.values()))
     care_hours = {
         "infant": 5.0,
         "toddler": 3.0,
@@ -700,7 +738,9 @@ def _available_labour_hours(runtime: HouseholdRuntime) -> float:
                 hours_by_person[caregiver.id] = max(
                     0.0, hours_by_person[caregiver.id] - share
                 )
-    return max(0.0, sum(hours_by_person.values()))
+    available_hours = max(0.0, sum(hours_by_person.values()))
+    care_hours = max(0.0, potential_hours - available_hours)
+    return available_hours, care_hours, potential_hours
 
 
 def _fetch_water(
@@ -744,27 +784,143 @@ def _fetch_water(
         )
         return available_hours, delivered, method
 
-    if runtime.water_container_capacity_l <= 0.0 and available_hours >= 0.5:
-        fiber = _nearest_material_kg(world, runtime, "fiber", 0.2)
-        wood = _nearest_material_kg(world, runtime, "wood", 0.5)
-        if fiber >= 0.15 and wood >= 0.4:
-            runtime.water_container_capacity_l = max(
-                1.5, len(mobile_people) * 1.5
+    vessel = world.baseline.raw["hydrology"].get(
+        "water_vessel",
+        {
+            "type": "legacy_expedient_container",
+            "capacity_l": 1.5,
+            "craft_hours": 0.5,
+            "wood_kg": 0.5,
+            "fiber_kg": 0.2,
+            "clay_kg": 0.0,
+            "minimum_tool_quality": 0.0,
+            "required_skill_any": [],
+            "success_rate": 1.0,
+            "leak_loss_fraction": 0.0,
+        },
+    )
+    target_capacity = float(vessel["capacity_l"]) * max(1, len(mobile_people))
+    if (
+        runtime.water_container_capacity_l < target_capacity
+        and runtime.water_vessel_blocked_reason is None
+        and day - runtime.last_water_vessel_attempt_day >= 5
+    ):
+        runtime.last_water_vessel_attempt_day = day
+        maker = _choose_vessel_maker(runtime, vessel["required_skill_any"])
+        if maker is None:
+            runtime.water_vessel_blocked_reason = "no_skilled_maker"
+            runtime.water_vessel_failure_reasons["no_skilled_maker"] = (
+                runtime.water_vessel_failure_reasons.get(
+                    "no_skilled_maker", 0
+                )
+                + 1
             )
-            runtime.water_container_built_day = day
-            available_hours -= 0.5
+        elif runtime.tool_quality < float(vessel["minimum_tool_quality"]):
+            runtime.water_vessel_blocked_reason = "tools_not_ready"
+            runtime.water_vessel_failure_reasons["tools_not_ready"] = (
+                runtime.water_vessel_failure_reasons.get(
+                    "tools_not_ready", 0
+                )
+                + 1
+            )
+        elif available_hours < float(vessel["craft_hours"]):
+            runtime.water_vessel_failure_reasons["no_time"] = (
+                runtime.water_vessel_failure_reasons.get("no_time", 0) + 1
+            )
+        else:
+            fiber = _nearest_material_kg(
+                world, runtime, "fiber", float(vessel["fiber_kg"])
+            )
+            wood = _nearest_material_kg(
+                world, runtime, "wood", float(vessel["wood_kg"])
+            )
+            clay = _nearest_material_kg(
+                world, runtime, "clay", float(vessel["clay_kg"])
+            )
+            available_hours -= float(vessel["craft_hours"])
+            runtime.water_vessel_attempts += 1
+            materials_ok = (
+                fiber >= float(vessel["fiber_kg"]) * 0.95
+                and wood >= float(vessel["wood_kg"]) * 0.95
+                and clay >= float(vessel["clay_kg"]) * 0.95
+            )
+            if not materials_ok:
+                runtime.water_vessel_failures += 1
+                runtime.water_vessel_failure_reasons["missing_material"] = (
+                    runtime.water_vessel_failure_reasons.get(
+                        "missing_material", 0
+                    )
+                    + 1
+                )
+                if runtime.water_vessel_attempts >= 3:
+                    runtime.water_vessel_blocked_reason = "missing_material"
+            else:
+                success_value = _stable_unit(
+                    world.seed + day * 811, runtime.household_id
+                )
+                if success_value < float(vessel["success_rate"]):
+                    runtime.water_container_capacity_l = min(
+                        target_capacity,
+                        runtime.water_container_capacity_l
+                        + float(vessel["capacity_l"]),
+                    )
+                    runtime.water_container_built_day = day
+                    runtime.water_vessel_maker_ids.append(maker.id)
+                else:
+                    runtime.water_vessel_failures += 1
+                    runtime.water_vessel_failure_reasons["craft_failed"] = (
+                        runtime.water_vessel_failure_reasons.get(
+                            "craft_failed", 0
+                        )
+                        + 1
+                    )
+                    if runtime.water_vessel_attempts >= 3:
+                        runtime.water_vessel_blocked_reason = "craft_failed"
     carry_capacity = runtime.water_container_capacity_l
     if carry_capacity <= 0.0:
-        return available_hours, 0.0, "no_carrying_vessel"
-    trips = litres_needed / carry_capacity
+        drinkers = len(mobile_people) + min(
+            dependent_count, max(0, len(mobile_people) // 2)
+        )
+        direct_capacity = drinkers * 1.8
+        required_hours = (
+            max(1, len(mobile_people))
+            * (_distance_walk_hours(distance_km) + 0.2)
+            + math.ceil(dependent_count / 2.0)
+            * _distance_walk_hours(distance_km)
+        )
+        if required_hours <= available_hours:
+            delivered = min(litres_needed, direct_capacity)
+            world.water_volume_m3 = max(
+                0.0, world.water_volume_m3 - delivered / 1000.0
+            )
+            return required_hours, delivered, "travel_to_source_without_vessel"
+        fraction = available_hours / required_hours if required_hours else 1.0
+        delivered = min(litres_needed, direct_capacity * fraction)
+        world.water_volume_m3 = max(
+            0.0, world.water_volume_m3 - delivered / 1000.0
+        )
+        return available_hours, delivered, "travel_to_source_without_vessel"
+    effective_capacity = carry_capacity * (
+        1.0 - float(vessel["leak_loss_fraction"])
+    )
+    trips = litres_needed / max(0.1, effective_capacity)
     hours_per_trip = _distance_walk_hours(distance_km) + 0.18
     required_hours = trips * hours_per_trip
     if required_hours <= available_hours:
-        world.water_volume_m3 = max(0.0, world.water_volume_m3 - litres_needed / 1000.0)
+        withdrawn = trips * carry_capacity
+        world.water_volume_m3 = max(
+            0.0, world.water_volume_m3 - withdrawn / 1000.0
+        )
         return required_hours, litres_needed, "carried_in_expedient_vessels"
     fraction = available_hours / required_hours if required_hours else 1.0
-    delivered = litres_needed * max(0.0, min(1.0, fraction))
-    world.water_volume_m3 = max(0.0, world.water_volume_m3 - delivered / 1000.0)
+    completed_trips = trips * max(0.0, min(1.0, fraction))
+    delivered = min(
+        litres_needed, completed_trips * effective_capacity
+    )
+    withdrawn = completed_trips * carry_capacity
+    world.water_volume_m3 = max(
+        0.0, world.water_volume_m3 - withdrawn / 1000.0
+    )
     return available_hours, delivered, "carried_in_expedient_vessels"
 
 
@@ -822,24 +978,42 @@ def _advance_fire(
     hours: float,
     day: int,
 ) -> None:
-    if hours <= 0.0:
-        return
     if runtime.fire_quality > 0.0:
+        if hours <= 0.0:
+            return
         wood = _nearest_material_kg(world, runtime, "wood", 1.2)
         runtime.fire_quality = 0.85 if wood >= 0.5 else 0.0
+        return
+    if hours <= 0.0:
+        runtime.fire_days_without_time += 1
+        return
+    if day - runtime.last_fire_material_search_day < 5:
         return
     wood = _nearest_material_kg(world, runtime, "wood", 2.0)
     fiber = _nearest_material_kg(world, runtime, "fiber", 0.5)
     if wood < 0.5 or fiber < 0.1:
+        runtime.last_fire_material_search_day = day
+        runtime.fire_material_search_failures += 1
         return
+    if runtime.fire_first_attempt_day is None:
+        runtime.fire_first_attempt_day = day
+    runtime.last_fire_material_search_day = day
+    runtime.fire_attempts += 1
     skilled = bool({"fire_friction", "fire_keeping"} & runtime.skills)
     attempt_value = _stable_unit(
         world.seed + day * 131, runtime.household_id
     )
     success_threshold = hours * (0.27 if skilled else 0.035)
-    runtime.fire_quality = 0.9 if attempt_value < success_threshold else 0.0
-    if runtime.fire_quality > 0.0 and runtime.fire_first_success_day is None:
-        runtime.fire_first_success_day = day
+    if attempt_value < success_threshold:
+        runtime.fire_quality = 0.9
+        if runtime.fire_first_success_day is None:
+            runtime.fire_first_success_day = day
+    else:
+        runtime.fire_quality = 0.0
+        runtime.fire_failures += 1
+        runtime.fire_failure_reasons["failed_attempt"] = (
+            runtime.fire_failure_reasons.get("failed_attempt", 0) + 1
+        )
 
 
 def _harvest_food(
@@ -849,9 +1023,11 @@ def _harvest_food(
     target_kcal: float,
     consumption: dict[str, float],
     harvest_details: dict[str, dict[str, float]],
-) -> float:
+    daily_harvest_details: list[dict[str, float | str]],
+    time_account: dict[str, float],
+) -> tuple[float, float]:
     if hours <= 0.0 or target_kcal <= 0.0:
-        return 0.0
+        return 0.0, 0.0
     acquired = 0.0
     remaining_hours = hours
     for resource_id, cell_index, _, distance_km in runtime.supply_options:
@@ -932,8 +1108,24 @@ def _harvest_food(
         details["processing_hours"] += processing_hours
         details["travel_hours"] += travel_hours
         details["processing_attempts"] += 1
+        time_account["food_harvest"] += harvest_hours
+        time_account["food_processing"] += processing_hours
+        time_account["food_travel"] += travel_hours
+        daily_harvest_details.append(
+            {
+                "day": world.elapsed_days,
+                "resource_id": resource_id,
+                "stock_kg_removed": stock_kg,
+                "edible_food_kg": edible_kg,
+                "edible_kcal": edible_kg * float(spec["kcal_per_kg"]),
+                "harvest_hours": harvest_hours,
+                "processing_hours": processing_hours,
+                "travel_hours": travel_hours,
+                "processing_failure": 1.0 if edible_kg <= 0.0 else 0.0,
+            }
+        )
         acquired += edible_kg * float(spec["kcal_per_kg"])
-    return acquired
+    return acquired, hours - remaining_hours
 
 
 def _consume_food(
@@ -1050,6 +1242,28 @@ def _choose_explorer(runtime: HouseholdRuntime) -> Person | None:
         for person in runtime.members
         if person.life_stage in {"adolescent", "adult", "elder"}
         and person.mobility >= 0.5
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda person: person.id)
+
+
+def _choose_vessel_maker(
+    runtime: HouseholdRuntime,
+    required_skills: list[str],
+) -> Person | None:
+    eligible = [
+        person
+        for person in runtime.members
+        if person.life_stage in {"adolescent", "adult", "elder"}
+        and person.mobility >= 0.5
+    ]
+    if not required_skills:
+        return min(eligible, key=lambda person: person.id) if eligible else None
+    candidates = [
+        person
+        for person in eligible
+        if any(skill["id"] in required_skills for skill in person.skills)
     ]
     if not candidates:
         return None
@@ -1251,6 +1465,14 @@ def _summarize_windows(metrics: list[DayMetric]) -> dict[str, dict[str, Any]]:
         if selected[-1].fire_fraction >= 0.5:
             feasible_paths.append("produce or maintain fire with suitable material")
         results[window_id] = {
+            "elapsed_day_range": [selected[0].day, selected[-1].day],
+            "day_of_year_range": [
+                selected[0].day_of_year,
+                selected[-1].day_of_year,
+            ],
+            "spans_calendar_year": (
+                selected[0].day_of_year > selected[-1].day_of_year
+            ),
             "status": (
                 "evaluated"
                 if min_water >= 0.9 and average_food >= 0.85
@@ -1277,6 +1499,12 @@ def _summarize_windows(metrics: list[DayMetric]) -> dict[str, dict[str, Any]]:
             ),
             "days_with_household_min_below_080": sum(
                 item.food_ratio_household_min < 0.8 for item in selected
+            ),
+            "household_days_below_080": sum(
+                item.households_below_080 for item in selected
+            ),
+            "mean_households_below_080_per_day": round(
+                mean(item.households_below_080 for item in selected), 3
             ),
             "longest_consecutive_household_min_below_080": (
                 _longest_streak(
@@ -1517,18 +1745,46 @@ def _build_acquisition_paths(
     harvest_details: dict[str, dict[str, float]],
     baseline: dict[str, Any],
     water_method_counts: dict[str, int],
+    daily_harvest_details: list[dict[str, float | str]],
+    time_account: dict[str, float],
 ) -> dict[str, Any]:
     household_count = len(runtimes)
     return {
         "water": {
             "day_one_method": "travel to source and drink without a container",
             "later_method": "daily refill of expedient fiber-and-wood carrying vessels",
+            "vessel_spec": baseline["hydrology"]["water_vessel"],
             "water_is_not_added_without_fetch_labour": True,
             "method_household_days": dict(sorted(water_method_counts.items())),
             "container_built_households": sum(
                 runtime.water_container_built_day is not None
                 for runtime in runtimes.values()
             ),
+            "vessel_attempts": sum(
+                runtime.water_vessel_attempts
+                for runtime in runtimes.values()
+            ),
+            "vessel_failures": sum(
+                runtime.water_vessel_failures
+                for runtime in runtimes.values()
+            ),
+            "maker_assignments": sum(
+                len(runtime.water_vessel_maker_ids)
+                for runtime in runtimes.values()
+            ),
+            "blocked_reasons": {
+                reason: sum(
+                    runtime.water_vessel_blocked_reason == reason
+                    for runtime in runtimes.values()
+                )
+                for reason in sorted(
+                    {
+                        runtime.water_vessel_blocked_reason
+                        for runtime in runtimes.values()
+                        if runtime.water_vessel_blocked_reason is not None
+                    }
+                )
+            },
             "minimum_container_capacity_l": min(
                 (
                     runtime.water_container_capacity_l
@@ -1560,37 +1816,168 @@ def _build_acquisition_paths(
             }
             for resource_id, values in sorted(harvest_details.items())
         },
+        "food_by_window": {
+            window_id: _summarize_daily_harvest(
+                daily_harvest_details, start, end
+            )
+            for window_id, start, end in WINDOWS
+        },
         "shelter": _completion_summary(
-            runtimes, "shelter_completed_day"
+            runtimes,
+            "shelter_completed_day",
+            int(baseline["start_day_of_year"]),
         ),
-        "fire": _completion_summary(runtimes, "fire_first_success_day"),
-        "tools": _completion_summary(runtimes, "tool_completed_day"),
+        "fire": _completion_summary(
+            runtimes,
+            "fire_first_success_day",
+            int(baseline["start_day_of_year"]),
+        ),
+        "fire_attempts": {
+            "households_with_attempts": sum(
+                runtime.fire_first_attempt_day is not None
+                for runtime in runtimes.values()
+            ),
+            "first_attempt_days": _completion_summary(
+                runtimes,
+                "fire_first_attempt_day",
+                int(baseline["start_day_of_year"]),
+            ),
+            "total_attempts": sum(
+                runtime.fire_attempts for runtime in runtimes.values()
+            ),
+            "total_failures": sum(
+                runtime.fire_failures for runtime in runtimes.values()
+            ),
+            "days_without_time": sum(
+                runtime.fire_days_without_time
+                for runtime in runtimes.values()
+            ),
+            "material_search_failures": sum(
+                runtime.fire_material_search_failures
+                for runtime in runtimes.values()
+            ),
+            "failure_reasons": {
+                reason: sum(
+                    runtime.fire_failure_reasons.get(reason, 0)
+                    for runtime in runtimes.values()
+                )
+                for reason in sorted(
+                    {
+                        reason
+                        for runtime in runtimes.values()
+                        for reason in runtime.fire_failure_reasons
+                    }
+                )
+            },
+        },
+        "tools": _completion_summary(
+            runtimes,
+            "tool_completed_day",
+            int(baseline["start_day_of_year"]),
+        ),
         "time_models": {
             "household_count": household_count,
             "days": len(metrics),
             "test_kind": "fixed_population_demand_pressure_test",
             "body_consequences": "not implemented",
         },
+        "time_account_hours": {
+            **{
+                key: round(value, 6)
+                for key, value in sorted(time_account.items())
+            },
+            "closure_error_hours": round(
+                time_account.get("potential", 0.0)
+                - sum(
+                    value
+                    for key, value in time_account.items()
+                    if key != "potential"
+                ),
+                6,
+            ),
+        },
         "raw_baseline_reference": baseline["world_id"],
+    }
+
+
+def _summarize_daily_harvest(
+    details: list[dict[str, float | str]],
+    start_day: int,
+    end_day: int,
+) -> dict[str, dict[str, float]]:
+    summary: dict[str, dict[str, float]] = {}
+    for entry in details:
+        day = int(entry["day"])
+        if not start_day <= day <= end_day:
+            continue
+        resource_id = str(entry["resource_id"])
+        aggregate = summary.setdefault(
+            resource_id,
+            {
+                "stock_kg_removed": 0.0,
+                "edible_food_kg": 0.0,
+                "edible_kcal": 0.0,
+                "harvest_hours": 0.0,
+                "processing_hours": 0.0,
+                "travel_hours": 0.0,
+                "processing_attempts": 0.0,
+                "processing_failures": 0.0,
+            },
+        )
+        aggregate["stock_kg_removed"] += float(entry["stock_kg_removed"])
+        aggregate["edible_food_kg"] += float(entry["edible_food_kg"])
+        aggregate["edible_kcal"] += float(entry["edible_kcal"])
+        aggregate["harvest_hours"] += float(entry["harvest_hours"])
+        aggregate["processing_hours"] += float(entry["processing_hours"])
+        aggregate["travel_hours"] += float(entry["travel_hours"])
+        aggregate["processing_attempts"] += 1.0
+        aggregate["processing_failures"] += float(
+            entry["processing_failure"]
+        )
+    return {
+        resource_id: {
+            key: round(value, 6) for key, value in values.items()
+        }
+        for resource_id, values in sorted(summary.items())
     }
 
 
 def _completion_summary(
     runtimes: dict[str, HouseholdRuntime],
     attribute: str,
+    start_day_of_year: int,
 ) -> dict[str, Any]:
     values = sorted(
         int(getattr(runtime, attribute))
         for runtime in runtimes.values()
         if getattr(runtime, attribute) is not None
     )
+    completed_runtimes = [
+        runtime
+        for runtime in runtimes.values()
+        if getattr(runtime, attribute) is not None
+    ]
     return {
         "households_completed": len(values),
         "households_total": len(runtimes),
+        "people_in_completed_households": sum(
+            len(runtime.members) for runtime in completed_runtimes
+        ),
         "median_completion_day": (
             values[len(values) // 2] if values else None
         ),
+        "median_day_of_year": (
+            ((start_day_of_year - 1 + values[len(values) // 2] - 1) % 365)
+            + 1
+            if values
+            else None
+        ),
         "last_completion_day": values[-1] if values else None,
+        "last_day_of_year": (
+            ((start_day_of_year - 1 + values[-1] - 1) % 365) + 1
+            if values
+            else None
+        ),
     }
 
 

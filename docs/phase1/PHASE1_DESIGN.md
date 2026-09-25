@@ -8,12 +8,12 @@ Phase 1 不是长期模拟，也不评价 4000 人最终能否繁荣。它只回
 2. 在人物实际能力、信息和劳动时间下，是否存在可按时间窗检查的生存路径。
 3. 人口、家庭、经历、技能、照护和生态承载之间是否一致。
 
-当前 v2 结构化输入位于：
+当前 v3 结构化输入位于：
 
-- `data/phase1/versions/v2/world.json`
-- `data/phase1/versions/v2/survival.json`
-- `data/phase1/versions/v2/population.json`
-- `data/phase1/versions/v2/environment_baseline.json`
+- `data/phase1/versions/v3/world.json`
+- `data/phase1/versions/v3/survival.json`
+- `data/phase1/versions/v3/population.json`
+- `data/phase1/versions/v3/environment_baseline.json`
 
 审计器位于 `tools/phase1_audit.py`，端到端生成和核验入口位于 `tools/run_phase1.py`，
 模型实现位于 `plain_life/`。
@@ -120,13 +120,14 @@ Phase 1 不是长期模拟，也不评价 4000 人最终能否繁荣。它只回
 
 ## 当前专项结果
 
-- v2 是暖湿早季第 90 日基线，投放瞬间只有 1 个营地。
+- v3 是暖湿早季第 90 日基线，投放瞬间只有 1 个营地。
 - 最初数日、最初数周、季节转换和完整年度全部失败。
 - 无成本重新分配后仍有 340 天不足，不能把失败归因为缺少合作。
 - 饮水存在实际取水路径，但食物、遮蔽、火和稳定供给未通过。
-- 资源账目闭合且库存非负，但自然损失尚未实现。
-- 年度结果只是固定人口需求压力测试，没有身体、劳动和死亡反馈。
-- 家庭内部差异分配和家庭间交换规则尚未定义，门禁保持 `BLOCKED`。
+- 资源账目闭合且库存非负，植物过季损失已记录。
+- v3 增加互斥时间账，人口时间去向可以检查。
+- 年度结果仍是固定人口需求压力测试；身体、劳动和死亡反馈仅在短场景验证。
+- 家庭分配、请求回应、共享火和临时住所只在短场景通过，尚未接入年度人口。
+- 门禁保持 `BLOCKED`。
 
-v1 温带秋季基线和结果保存在 `data/phase1/versions/v1/` 与
-`docs/phase1/versions/v1/`，没有被 v2 覆盖。
+v1 和 v2 的基线与结果保存在各自版本目录，没有被 v3 覆盖。

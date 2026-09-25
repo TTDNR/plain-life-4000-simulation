@@ -57,7 +57,7 @@ def run_phase1(
         audit_data["survival"],
         audit_data["population"],
     )
-    _apply_runtime_audit_requirements(audit, survival)
+    _apply_runtime_audit_requirements(audit, survival, baseline)
     findings = audit["findings"]
     reports = {
         "environment": render_environment_report(
@@ -279,6 +279,7 @@ def result_string(value: Any) -> str:
 def _apply_runtime_audit_requirements(
     audit: dict[str, Any],
     survival: SurvivalRunResult,
+    baseline: EnvironmentBaseline,
 ) -> None:
     findings = audit["findings"]
     for resource_id, ledger in survival.resource_ledger.items():
@@ -304,22 +305,49 @@ def _apply_runtime_audit_requirements(
                     "message": "Resource stock became negative.",
                 }
             )
-    findings.append(
-        {
-            "section": "environment",
-            "severity": "blocker",
-            "code": "natural_loss_model_missing",
-            "path": "resource_ledger.*.natural_loss_kg",
-            "message": (
-                "Natural mortality, decay, pre-harvest spoilage, and other "
-                "environmental losses are not yet modeled; zero is a declared gap."
-            ),
-        }
-    )
+    missing_loss_specs = [
+        resource_id
+        for resource_id, spec in baseline.resource_specs.items()
+        if spec["kind"] == "plant"
+        and "season_end_natural_loss_fraction" not in spec
+    ]
+    if missing_loss_specs:
+        findings.append(
+            {
+                "section": "environment",
+                "severity": "blocker",
+                "code": "natural_loss_model_missing",
+                "path": "resource_ledger.*.natural_loss_kg",
+                "message": (
+                    "Season-end loss is missing for: "
+                    + ", ".join(sorted(missing_loss_specs))
+                ),
+            }
+        )
+    missing_net_growth = [
+        resource_id
+        for resource_id, spec in baseline.resource_specs.items()
+        if spec["kind"] == "animal"
+        and spec.get("natural_loss_included_in_net_growth") is not True
+    ]
+    if missing_net_growth:
+        findings.append(
+            {
+                "section": "environment",
+                "severity": "blocker",
+                "code": "animal_loss_semantics_missing",
+                "path": "resource_ledger.*.natural_loss_kg",
+                "message": (
+                    "Animal growth sources must state whether natural loss "
+                    "is already included in net growth: "
+                    + ", ".join(sorted(missing_net_growth))
+                ),
+            }
+        )
     if survival.test_kind == "fixed_population_demand_pressure_test":
         findings.append(
             {
-                "section": "initialization",
+                "section": "behavior",
                 "severity": "blocker",
                 "code": "dynamic_body_consequences_missing",
                 "path": "survival.test_kind",
@@ -332,7 +360,7 @@ def _apply_runtime_audit_requirements(
     findings.extend(
         [
             {
-                "section": "initialization",
+                "section": "behavior",
                 "severity": "blocker",
                 "code": "household_food_allocation_rules_missing",
                 "path": "population.behavior_gaps.household_food_allocation",
@@ -342,7 +370,7 @@ def _apply_runtime_audit_requirements(
                 ),
             },
             {
-                "section": "initialization",
+                "section": "behavior",
                 "severity": "blocker",
                 "code": "interhousehold_exchange_rules_missing",
                 "path": "population.behavior_gaps.interhousehold_exchange",

@@ -459,6 +459,18 @@ def advance_day(state: WorldState) -> dict[str, float]:
             stock = state.plant_stock_kg[resource_id]
             condition = state.plant_regen_condition[resource_id]
             season_start, season_end = spec["availability_day_range"]
+            previous_day = ((day - 2) % 365) + 1
+            if previous_day == int(season_end) and day != int(season_end):
+                natural_loss_fraction = float(
+                    spec.get("season_end_natural_loss_fraction", 0.0)
+                )
+                if natural_loss_fraction > 0.0:
+                    for index in range(len(stock)):
+                        lost = stock[index] * natural_loss_fraction
+                        stock[index] -= lost
+                        state.resource_ledger[resource_id][
+                            "natural_loss_kg"
+                        ] += lost
             annual_fraction = float(spec["annual_recovery_fraction"])
             if day == int(season_start):
                 for index, cap in enumerate(capacity):

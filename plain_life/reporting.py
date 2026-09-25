@@ -27,7 +27,7 @@ def render_environment_report(
         "",
         "## 先纠正设定",
         "",
-        "| 项目 | v1 | v2 | 处理说明 |",
+        "| 项目 | v1 | v3 | 处理说明 |",
         "| --- | --- | --- | --- |",
         "| 气候 | 温带泛滥平原，年均温约 13.25°C，年降雨约 795 mm | "
         "暖湿气候，年均温约 20.25°C，年降雨约 1460 mm | "
@@ -39,7 +39,7 @@ def render_environment_report(
         "| 知识 | 家庭技能集合直接共享 | 采集资格按实际人物技能判定，"
         "探索信息共享计入沟通时间 | 家庭成员不会自动同步见闻 |",
         "",
-        "v2 没有以季节调整掩盖 v1 的失败；v1 的失败结论仍为：最初数日可行，"
+        "v3 没有以季节调整掩盖 v1 的失败；v1 的失败结论仍为：最初数日可行，"
         "最初数周以后失败，年度稳定供给失败。",
         "",
         "## 世界快照",
@@ -170,8 +170,9 @@ def render_environment_report(
             "- 成熟变化在初始化时决定期初状态，不记为再生新增；"
             "季节外的实际生物量增长才计入新增。",
             "- 鱼类不再从零库存自动恢复 1% 承载量；枯竭后只能通过实际存活生物量增长恢复。",
-            "- 自然死亡、腐坏和采集前损失尚未实现，因此账表里的自然损失为零是"
-            "声明中的模型缺口，不是完整生态结论。",
+            "- 植物在过季时按各自比例发生腐坏、脱落或不可食损失，并记入自然损失。",
+            "- 动物 `daily_logistic` 是已经包含自然死亡影响的净增长；"
+            "因此不再重复扣减自然损失。疾病和异常死亡仍属于待补机制。",
             "",
             "## 材料与加工",
             "",
@@ -199,7 +200,7 @@ def render_environment_report(
             "",
             "### 模型假设",
             "",
-            "- 气候和气候的长期值属于 v2 参数化草案。",
+            f"- 气候和气候的长期值属于 {version} 参数化草案。",
             "- 物种产量、热值、可食比例、加工失败率和捕获率属于内部假设。",
             "- 地下水和地表水的容量、径流、污染稀释属于内部假设。",
             "- 所有 MODEL-* 编号都表示模型参数，不是现实证据。",
@@ -216,7 +217,7 @@ def render_environment_report(
             f"- 环境指纹：`{world.initial_fingerprint}`",
             f"- 人口指纹：`{population.fingerprint}`",
             f"- 试运行类型：`{run_result.test_kind}`",
-            "- 原始参数：`data/phase1/versions/v2/environment_baseline.json`",
+            f"- 原始参数：`data/phase1/versions/{version}/environment_baseline.json`",
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
@@ -253,20 +254,27 @@ def render_survival_report(
         "`平均食物满足率` 是每日实际消费热量除以固定人口需求后，再按日平均。"
         "`最低食物满足率` 是最困难的单个家庭日，不是全体人口平均值。"
         "`P10 家庭满足率` 展示最困难十分之一家庭的水平。",
+        "四个时间窗互不重叠：第 1–3 日、第 4–42 日、第 43–180 日、"
+        "第 181–365 日。日期同时给出投放后日数和世界年内日序。",
         "",
-        "| 时间窗 | 结果 | 平均食物满足率 | 最低家庭日满足率 | "
-        "P10 家庭满足率 | 最低饮水满足率 | 低于 80% 的家庭日 | "
+        "| 时间窗 | 投放后日期 | 世界年内日期 | 是否跨年 | 结果 | 平均食物满足率 | 最低家庭日满足率 | "
+        "P10 家庭满足率 | 最低饮水满足率 | 有家庭不足 80% 的天数 | "
+        "累计不足 80% 家庭日 | "
         "最长连续不足 80% |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for window_id, item in windows.items():
         lines.append(
-            f"| `{window_id}` | {item['status']} | "
+            f"| `{window_id}` | "
+            f"{item['elapsed_day_range'][0]}–{item['elapsed_day_range'][1]} | "
+            f"{item['day_of_year_range'][0]}–{item['day_of_year_range'][1]} | "
+            f"{item['spans_calendar_year']} | {item['status']} | "
             f"{item['average_food_ratio']} | "
             f"{item['minimum_household_food_ratio']} | "
             f"{item['p10_household_food_ratio']} | "
             f"{item['minimum_water_ratio']} | "
             f"{item['days_with_household_min_below_080']} | "
+            f"{item['household_days_below_080']} | "
             f"{item['longest_consecutive_household_min_below_080']} |"
         )
     lines.extend(
@@ -295,6 +303,19 @@ def render_survival_report(
             f"- 已建造携带容器的家庭："
             f"`{run_result.acquisition_paths['water']['container_built_households']} / "
             f"{household_total}`。",
+            f"- 水具类型："
+            f"`{run_result.acquisition_paths['water']['vessel_spec']['type']}`，"
+            f"单件容量 "
+            f"`{run_result.acquisition_paths['water']['vessel_spec']['capacity_l']} L`，"
+            f"制作工时 "
+            f"`{run_result.acquisition_paths['water']['vessel_spec']['craft_hours']} h`。",
+            f"- 水具尝试："
+            f"`{run_result.acquisition_paths['water']['vessel_attempts']}`，"
+            f"失败：`{run_result.acquisition_paths['water']['vessel_failures']}`，"
+            f"实际指定制作者："
+            f"`{run_result.acquisition_paths['water']['maker_assignments']}` 人次。",
+            f"- 水具制作停止原因："
+            f"`{run_result.acquisition_paths['water']['blocked_reasons']}`。",
             f"- 最小容器容量："
             f"`{run_result.acquisition_paths['water']['minimum_container_capacity_l']} L`。",
             "- 送水不是自动入仓：每次取水都计算到水源的往返时间，"
@@ -302,7 +323,29 @@ def render_survival_report(
             "- 行动受限者和婴幼儿由照护者带到水边或用水具带回；"
             "缺少容器时没有隐藏的家庭水库存。",
             "",
-            "## 初期食物加工路径",
+            "## 最初三天食物加工路径",
+            "",
+            "| 资源 | 活体/存量扣除 kg | 可食食物 kg | 可食热量 kcal | "
+            "采集小时 | 加工小时 | 行程小时 | 加工失败次数 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    initial_food = run_result.acquisition_paths["food_by_window"][
+        "initial_days"
+    ]
+    for resource_id, item in initial_food.items():
+        if item["stock_kg_removed"] <= 0.0 and item["processing_attempts"] == 0:
+            continue
+        lines.append(
+            f"| `{resource_id}` | {item['stock_kg_removed']} | "
+            f"{item['edible_food_kg']} | {item['edible_kcal']} | "
+            f"{item['harvest_hours']} | {item['processing_hours']} | "
+            f"{item['travel_hours']} | {item['processing_failures']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "### 全试运行累计",
             "",
             "| 资源 | 活体/存量扣除 kg | 可食食物 kg | 可食热量 kcal | "
             "采集小时 | 加工小时 | 行程小时 | 加工失败次数 |",
@@ -321,6 +364,7 @@ def render_survival_report(
     lines.extend(
         [
             "",
+            "- 最初三天表只统计投放后第 1–3 日，不包含后来的秋季坚果。",
             "- 橡子和水生地下部分不是原料公斤直接等于热量；"
             "表中已经扣除获取时间、加工时间和加工失败。",
             "- 加工失败会消耗实际采集到的原料，但不会产生可食热量。",
@@ -329,17 +373,36 @@ def render_survival_report(
             "",
             f"- 遮蔽完成家庭："
             f"`{run_result.acquisition_paths['shelter']['households_completed']}`，"
-            f"中位完成日："
-            f"`{run_result.acquisition_paths['shelter']['median_completion_day']}`。",
+            f"覆盖人数："
+            f"`{run_result.acquisition_paths['shelter']['people_in_completed_households']}`，"
+            f"中位完成日（投放后）："
+            f"`{run_result.acquisition_paths['shelter']['median_completion_day']}`；"
+            f"世界年内第 "
+            f"`{run_result.acquisition_paths['shelter']['median_day_of_year']}` 日。",
             f"- 火首次成功家庭："
             f"`{run_result.acquisition_paths['fire']['households_completed']}`，"
-            f"中位成功日："
-            f"`{run_result.acquisition_paths['fire']['median_completion_day']}`。",
+            f"中位成功日（投放后）："
+            f"`{run_result.acquisition_paths['fire']['median_completion_day']}`；"
+            f"世界年内第 "
+            f"`{run_result.acquisition_paths['fire']['median_day_of_year']}` 日。",
+            f"- 火首次尝试家庭："
+            f"`{run_result.acquisition_paths['fire_attempts']['households_with_attempts']}`；"
+            f"总尝试 `{run_result.acquisition_paths['fire_attempts']['total_attempts']}` 次，"
+            f"失败 `{run_result.acquisition_paths['fire_attempts']['total_failures']}` 次。",
+            f"- 没有安排取火时间："
+            f"`{run_result.acquisition_paths['fire_attempts']['days_without_time']}` 家庭日；"
+            f"找到时间和技能但材料不足："
+            f"`{run_result.acquisition_paths['fire_attempts']['material_search_failures']}` 家庭日。",
+            f"- 取火失败原因："
+            f"`{run_result.acquisition_paths['fire_attempts']['failure_reasons']}`。",
             f"- 工具达到可用阈值家庭："
             f"`{run_result.acquisition_paths['tools']['households_completed']}`，"
-            f"中位完成日："
-            f"`{run_result.acquisition_paths['tools']['median_completion_day']}`。",
+            f"中位完成日（投放后）："
+            f"`{run_result.acquisition_paths['tools']['median_completion_day']}`；"
+            f"世界年内第 "
+            f"`{run_result.acquisition_paths['tools']['median_day_of_year']}` 日。",
             "- 每次遮蔽、取火和工具尝试都消耗实际材料和劳动时间。",
+            "- 取火失败原因分类见下方机器报告；有火家庭仍不等于每户独立生火。",
             "",
             "## 分配对照",
             "",
@@ -363,6 +426,27 @@ def render_survival_report(
             f"`{run_result.distribution_diagnostics['costless_redistribution']['residual_supply_or_labor_failure_days']}`。",
             "- 因此不能预设“缺少合作是主要原因”；必须同时报告总供给、劳动时间、"
             "加工能力、可达范围和分配不均的各自贡献。",
+            "- 剩余地图库存只表示尚未扣除的资源，不等于人物可识别、可到达、"
+            "可加工、可储存或实际能吃到的食物。",
+            "",
+            "## 个人时间去向",
+            "",
+            "| 时间类别 | 家庭小时 |",
+            "| --- | ---: |",
+        ]
+    )
+    for category, hours in run_result.acquisition_paths[
+        "time_account_hours"
+    ].items():
+        lines.append(f"| `{category}` | {hours} |")
+    lines.extend(
+        [
+            "",
+            "- `potential` 是照护前可用工时；其他分类是互斥实际去向。",
+            f"- 时间账闭合误差："
+            f"`{run_result.acquisition_paths['time_account_hours']['closure_error_hours']}` 小时。",
+            "- 同一小时不会同时计入远处采集和营地照护；简单工作与照护并行时，"
+            "通过效率倍率降低工作时间，而不是重复记两笔。",
             "",
             "## 必须保留的测试限制",
             "",
@@ -394,6 +478,11 @@ def render_initialization_report(
         for finding in all_blockers
         if finding["section"] == "initialization"
     ]
+    behavior_blockers = [
+        finding
+        for finding in all_blockers
+        if finding["section"] == "behavior"
+    ]
     lines = [
         f"# 初始化一致性检查报告（{version}）",
         "",
@@ -409,10 +498,12 @@ def render_initialization_report(
         f"- 哺乳关系：`{summary['lactation_links']}`。",
         f"- 婴儿：`{summary['infants']}`，有照护者："
         f"`{summary['infants_with_caregiver']}`。",
-        f"- 人口内部阻断项：`{len(population_blockers)}`；"
+        f"- 人口内部一致性阻断项：`{len(population_blockers)}`；"
+        f"行为能力阻断项：`{len(behavior_blockers)}`；"
         f"全部审计阻断项：`{len(all_blockers)}`。",
         "",
-        "人口内部结构通过不等于 Phase 1 整体通过。当前整体门禁状态为 "
+        "人口内部结构和亲属引用通过，不等于身体与行为能力已经完成。"
+        "当前整体门禁状态为 "
         f"`{gate_status}`：见下方阻断证据。",
         "",
         "## 年龄与家庭",
@@ -438,7 +529,8 @@ def render_initialization_report(
             "",
             "- 家庭角色、年龄、亲子和伴侣关系在同一初始化过程中生成。",
             "- 婴儿都有照护者、活产事件和哺乳关系。",
-            "- v2 不再把家庭技能集合自动视为个人知识；采集资格按实际成员技能判断。",
+            f"- {version} 不再把家庭技能集合自动视为个人知识；"
+            "采集资格按实际成员技能判断。",
             "- 家庭内部当前仍有共同食物仓库假设。有差异、可拒绝、会冲突的"
             "家庭分配行为尚未定义，因此不能把这份人口快照当作完整家庭行为验收结果。",
             "",
