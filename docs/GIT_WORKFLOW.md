@@ -10,14 +10,20 @@ git status --short --branch
 
 ## 提交前检查
 
-空白模板阶段：
+Phase 1 审计工具：
 
 ```powershell
+py -3.12 -m compileall -q tools tests
+py -3.12 -m unittest discover -s tests -v
+py -3.12 tools\phase1_audit.py --data data\phase1 --format markdown --allow-blocked
 git diff --check
 git status
 ```
 
-确定技术栈后，必须在这里补充实际使用的构建、测试、格式化和运行验证命令。
+`phase1_audit.py` 不加 `--allow-blocked` 时，`BLOCKED` 或 `CONDITIONAL` 会返回非零退出码，
+用于阻止长期模拟。`--allow-blocked` 只用于生成当前状态报告。
+
+确定长期模拟技术栈后，必须在这里补充该技术的实际构建、测试、格式化和运行命令。
 
 ## 提交
 
