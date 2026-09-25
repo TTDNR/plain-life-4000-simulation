@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
 
 from .environment import Cell, WorldState
+from .environment import (
+    record_material_harvest,
+    record_resource_harvest,
+    resource_ledger_snapshot,
+)
 from .population import Person, PopulationState
 
 
@@ -41,6 +47,11 @@ class DayMetric:
     food_demand_kcal: float
     food_acquired_kcal: float
     food_ratio: float
+    food_ratio_household_min: float
+    food_ratio_household_p10: float
+    households_below_080: int
+    migration_hours: float
+    knowledge_sharing_hours: float
     water_demand_litres: float
     water_acquired_litres: float
     water_ratio: float
@@ -63,6 +74,7 @@ class HouseholdRuntime:
     known_cells: set[int]
     supply_options: list[tuple[str, int, float, float]]
     material_options: dict[str, list[int]]
+    person_known_cells: dict[str, set[int]]
     food_store_kg: dict[str, float] = field(default_factory=dict)
     shelter_quality: float = 0.0
     fire_quality: float = 0.0
@@ -73,6 +85,13 @@ class HouseholdRuntime:
     migrations: int = 0
     last_migration_day: int = 0
     last_food_ratio: float = 1.0
+    migration_travel_debt_hours: float = 0.0
+    knowledge_sharing_hours: float = 0.0
+    shelter_completed_day: int | None = None
+    fire_first_success_day: int | None = None
+    tool_completed_day: int | None = None
+    water_container_capacity_l: float = 0.0
+    water_container_built_day: int | None = None
 
     @property
     def skills(self) -> set[str]:
@@ -85,6 +104,7 @@ class HouseholdRuntime:
 
 @dataclass
 class SurvivalRunResult:
+    test_kind: str
     days: int
     start_environment_fingerprint: str
     end_environment_fingerprint: str
@@ -94,12 +114,17 @@ class SurvivalRunResult:
     window_results: dict[str, dict[str, Any]]
     path_results: dict[str, dict[str, Any]]
     food_audit: dict[str, Any]
+    resource_ledger: dict[str, dict[str, float]]
+    harvest_details: dict[str, dict[str, float]]
+    acquisition_paths: dict[str, dict[str, Any]]
+    distribution_diagnostics: dict[str, Any]
     resource_consumption_kg: dict[str, float]
     migration_summary: dict[str, Any]
     final_resource_stock_kg: dict[str, float]
 
     def summary(self) -> dict[str, Any]:
         return {
+            "test_kind": self.test_kind,
             "days": self.days,
             "start_environment_fingerprint": self.start_environment_fingerprint,
             "end_environment_fingerprint": self.end_environment_fingerprint,
@@ -108,6 +133,10 @@ class SurvivalRunResult:
             "window_results": self.window_results,
             "path_results": self.path_results,
             "food_audit": self.food_audit,
+            "resource_ledger": self.resource_ledger,
+            "harvest_details": self.harvest_details,
+            "acquisition_paths": self.acquisition_paths,
+            "distribution_diagnostics": self.distribution_diagnostics,
             "resource_consumption_kg": self.resource_consumption_kg,
             "migration_summary": self.migration_summary,
             "final_resource_stock_kg": self.final_resource_stock_kg,
@@ -139,6 +168,22 @@ def run_survival_validation(
         resource_id: 0.0
         for resource_id in world.baseline.resource_specs
     }
+    harvest_details = {
+        resource_id: {
+            "stock_kg_removed": 0.0,
+            "edible_food_kg": 0.0,
+            "edible_kcal": 0.0,
+            "harvest_hours": 0.0,
+            "processing_hours": 0.0,
+            "travel_hours": 0.0,
+            "processing_attempts": 0.0,
+            "processing_failures": 0.0,
+        }
+        for resource_id in world.baseline.resource_specs
+    }
+    distribution_observations: list[dict[str, float]] = []
+    water_method_counts: dict[str, int] = {}
+    camps_after_day_one_selection: set[int] = set()
 
     for day in range(1, days + 1):
         weather = _advance_day(world)
@@ -151,6 +196,10 @@ def run_survival_validation(
             water_distance_cache,
             camp_score_cache,
         )
+        if day == 1:
+            camps_after_day_one_selection = {
+                runtime.camp_cell_index for runtime in runtimes.values()
+            }
         day_metric = _simulate_day(
             world,
             runtimes,
@@ -158,6 +207,9 @@ def run_survival_validation(
             weather,
             resource_consumption,
             water_distance_cache,
+            harvest_details,
+            distribution_observations,
+            water_method_counts,
         )
         metrics.append(day_metric)
 
@@ -171,6 +223,17 @@ def run_survival_validation(
         runtimes,
         metrics,
         resource_consumption,
+        harvest_details,
+    )
+    distribution_diagnostics = _build_distribution_diagnostics(
+        distribution_observations
+    )
+    acquisition_paths = _build_acquisition_paths(
+        runtimes,
+        metrics,
+        harvest_details,
+        world.baseline.raw,
+        water_method_counts,
     )
     migration_summary = {
         "households_that_migrated": sum(
@@ -179,7 +242,11 @@ def run_survival_validation(
         "migration_events": sum(
             runtime.migrations for runtime in runtimes.values()
         ),
-        "initial_camps": len({runtime.camp_cell_index for runtime in runtimes.values()}),
+        "drop_instant_camps": 1,
+        "camps_after_day_one_selection": len(camps_after_day_one_selection),
+        "final_camps": len(
+            {runtime.camp_cell_index for runtime in runtimes.values()}
+        ),
         "known_cell_radius_km_end": round(_exploration_radius_km(days), 3),
     }
     final_stock = {
@@ -191,6 +258,7 @@ def run_survival_validation(
     }
     end_fingerprint = world.fingerprint()
     return SurvivalRunResult(
+        test_kind="fixed_population_demand_pressure_test",
         days=days,
         start_environment_fingerprint=start_fingerprint,
         end_environment_fingerprint=end_fingerprint,
@@ -203,6 +271,13 @@ def run_survival_validation(
         window_results=window_results,
         path_results=path_results,
         food_audit=food_audit,
+        resource_ledger=resource_ledger_snapshot(world),
+        harvest_details={
+            key: {metric: round(value, 6) for metric, value in values.items()}
+            for key, values in sorted(harvest_details.items())
+        },
+        acquisition_paths=acquisition_paths,
+        distribution_diagnostics=distribution_diagnostics,
         resource_consumption_kg={
             key: round(value, 3)
             for key, value in sorted(resource_consumption.items())
@@ -227,55 +302,33 @@ def _initialize_household_runtimes(
     camp_score_cache: dict[int, float],
 ) -> dict[str, HouseholdRuntime]:
     drop_index = world.drop_point.index
-    initial_candidates = [
-        cell.index
-        for cell in world.cells
-        if cell.habitable
-        and _distance_km(world, drop_index, cell.index) <= 3.5
-    ]
-    if not initial_candidates:
-        initial_candidates = [cell.index for cell in world.cells if cell.habitable]
-
-    occupancy: dict[int, int] = {}
     runtimes: dict[str, HouseholdRuntime] = {}
     people_by_id = population.people_by_id
     households = sorted(population.households, key=lambda item: item.id)
-    for index in initial_candidates:
-        water_distance_cache.setdefault(
-            index, _nearest_water_distance_km(world, index)
-        )
-        camp_score_cache.setdefault(index, _camp_score(world, index))
-    candidates_by_score = sorted(
-        initial_candidates,
-        key=lambda index: camp_score_cache[index],
-        reverse=True,
+    water_distance_cache[drop_index] = _nearest_water_distance_km(
+        world, drop_index
     )
+    camp_score_cache[drop_index] = _camp_score(world, drop_index)
+    supply_options = supply_cache.get(drop_index)
+    if supply_options is None:
+        supply_options = _build_supply_options(world, drop_index)
+        supply_cache[drop_index] = supply_options
+    material_options = material_cache.get(drop_index)
+    if material_options is None:
+        material_options = _build_material_options(world, drop_index)
+        material_cache[drop_index] = material_options
     for household in households:
-        best = max(
-            candidates_by_score,
-            key=lambda index: (
-                camp_score_cache[index]
-                - occupancy.get(index, 0) * 0.35
-                - _distance_km(world, drop_index, index) * 2.5
-            ),
-        )
-        occupancy[best] = occupancy.get(best, 0) + 1
         members = [people_by_id[person_id] for person_id in household.member_ids]
-        supply_options = supply_cache.get(best)
-        if supply_options is None:
-            supply_options = _build_supply_options(world, best)
-            supply_cache[best] = supply_options
-        material_options = material_cache.get(best)
-        if material_options is None:
-            material_options = _build_material_options(world, best)
-            material_cache[best] = material_options
         runtimes[household.id] = HouseholdRuntime(
             household_id=household.id,
             members=members,
-            camp_cell_index=best,
-            known_cells={best},
+            camp_cell_index=drop_index,
+            known_cells={drop_index},
             supply_options=supply_options,
             material_options=material_options,
+            person_known_cells={
+                person.id: {drop_index} for person in members
+            },
         )
     return runtimes
 
@@ -291,17 +344,17 @@ def _prepare_household_runtimes(
 ) -> None:
     radius_km = _exploration_radius_km(day)
     drop_index = world.drop_point.index
-    candidate_cells = [
+    explored_cells = [
         cell.index
         for cell in world.cells
         if cell.habitable
         and _distance_km(world, drop_index, cell.index) <= radius_km
     ]
-    for index in candidate_cells:
+    for index in explored_cells:
         camp_score_cache.setdefault(index, _camp_score(world, index))
     dynamic_camp_scores = {
         index: world.food_score(world.cells[index]) / 1_000_000.0
-        for index in candidate_cells
+        for index in explored_cells
     }
     occupancy: dict[int, int] = {}
     for runtime in runtimes.values():
@@ -311,15 +364,38 @@ def _prepare_household_runtimes(
 
     should_consider_migration = day == 1 or day % 5 == 0
     for runtime in runtimes.values():
-        nearby = _nearby_habitable_indices(world, runtime.camp_cell_index, 2)
-        runtime.known_cells.update(nearby)
+        direct_observation = _nearby_habitable_indices(
+            world, runtime.camp_cell_index, 1
+        )
+        for person in runtime.members:
+            runtime.person_known_cells[person.id].update(
+                direct_observation
+            )
+        scout = _choose_explorer(runtime)
+        if scout is not None:
+            explored = _nearby_habitable_indices(
+                world, runtime.camp_cell_index, 2
+            )
+            before = set(runtime.person_known_cells[scout.id])
+            runtime.person_known_cells[scout.id].update(explored)
+            if len(runtime.person_known_cells[scout.id]) > len(before):
+                runtime.knowledge_sharing_hours += 0.5 + 0.1 * max(
+                    0, len(runtime.members) - 1
+                )
+        runtime.known_cells = {
+            cell_index
+            for known_cells in runtime.person_known_cells.values()
+            for cell_index in known_cells
+        }
+        candidate_cells = sorted(runtime.known_cells)
         if should_consider_migration:
             recent_ratio = runtime.last_food_ratio
             current_water_distance = _cached_water_distance(
                 world, runtime.camp_cell_index, water_distance_cache
             )
             needs_move = (
-                recent_ratio < 0.9
+                day == 1
+                or recent_ratio < 0.9
                 or current_water_distance > 1.8
                 or world.cells[runtime.camp_cell_index].flood_risk > 0.55
             )
@@ -328,7 +404,9 @@ def _prepare_household_runtimes(
                 world.food_score(world.cells[runtime.camp_cell_index])
                 / 1_000_000.0
             )
-            cooldown_elapsed = day - runtime.last_migration_day >= 7
+            cooldown_elapsed = (
+                day == 1 or day - runtime.last_migration_day >= 7
+            )
             if needs_move and cooldown_elapsed and candidate_cells:
                 best = max(
                     candidate_cells,
@@ -349,7 +427,8 @@ def _prepare_household_runtimes(
                 if (
                     best != runtime.camp_cell_index
                     and (
-                        current_water_distance > 1.8
+                        day == 1
+                        or current_water_distance > 1.8
                         or world.cells[runtime.camp_cell_index].flood_risk > 0.55
                         or best_score > current_score * 1.2 + 0.5
                     )
@@ -358,9 +437,15 @@ def _prepare_household_runtimes(
                         0, occupancy[runtime.camp_cell_index] - 1
                     )
                     occupancy[best] = occupancy.get(best, 0) + 1
+                    migration_hours = (
+                        _distance_km(world, runtime.camp_cell_index, best)
+                        * 2.0
+                        / 4.5
+                    )
                     runtime.camp_cell_index = best
                     runtime.migrations += 1
                     runtime.last_migration_day = day
+                    runtime.migration_travel_debt_hours += migration_hours
                     supply_options = supply_cache.get(best)
                     if supply_options is None:
                         supply_options = _build_supply_options(world, best)
@@ -380,6 +465,9 @@ def _simulate_day(
     weather: dict[str, float],
     resource_consumption: dict[str, float],
     water_distance_cache: dict[int, float],
+    harvest_details: dict[str, dict[str, float]],
+    distribution_observations: list[dict[str, float]],
+    water_method_counts: dict[str, int],
 ) -> DayMetric:
     food_demand = 0.0
     food_acquired = 0.0
@@ -393,6 +481,10 @@ def _simulate_day(
     hard_food_failure_households = 0
     water_failure_households = 0
     migrations = 0
+    migration_hours_total = 0.0
+    knowledge_hours_total = 0.0
+    household_food_ratios: list[float] = []
+    households_below_080 = 0
     household_order = sorted(
         runtimes,
         key=lambda household_id: (
@@ -413,7 +505,17 @@ def _simulate_day(
             )
         )
         hours = _available_labour_hours(runtime)
-        water_hours, delivered_litres = _fetch_water(
+        migration_hours = min(hours, runtime.migration_travel_debt_hours)
+        hours -= migration_hours
+        runtime.migration_travel_debt_hours = max(
+            0.0, runtime.migration_travel_debt_hours - migration_hours
+        )
+        knowledge_hours = min(hours, runtime.knowledge_sharing_hours)
+        hours -= knowledge_hours
+        runtime.knowledge_sharing_hours = max(
+            0.0, runtime.knowledge_sharing_hours - knowledge_hours
+        )
+        water_hours, delivered_litres, water_method = _fetch_water(
             world,
             runtime,
             litres,
@@ -455,7 +557,9 @@ def _simulate_day(
             hours,
             target_kcal,
             resource_consumption,
+            harvest_details,
         )
+        food_available_before_consumption = _store_kcal(world, runtime)
         consumed = _consume_food(world, runtime, demand)
         _spoil_food(runtime)
         ratio = consumed / demand if demand else 1.0
@@ -467,6 +571,9 @@ def _simulate_day(
         if ratio < 0.8:
             hard_food_failure_households += 1
         water_ratio = delivered_litres / litres if litres else 1.0
+        water_method_counts[water_method] = (
+            water_method_counts.get(water_method, 0) + 1
+        )
         if water_ratio < 0.9:
             runtime.water_deficit_streak += 1
             water_failure_households += 1
@@ -484,10 +591,32 @@ def _simulate_day(
         tool_quality_total += runtime.tool_quality
         runtime.last_food_ratio = ratio
         food_consumed += consumed
+        household_ratio = consumed / demand if demand else 1.0
+        household_food_ratios.append(household_ratio)
+        if household_ratio < 0.8:
+            households_below_080 += 1
+        distribution_observations.append(
+            {
+                "day": day,
+                "demand_kcal": demand,
+                "available_kcal": food_available_before_consumption,
+                "camp_cell_index": float(runtime.camp_cell_index),
+                "camp_x": float(world.cells[runtime.camp_cell_index].x),
+                "camp_y": float(world.cells[runtime.camp_cell_index].y),
+            }
+        )
         migrations += 1 if runtime.last_migration_day == day else 0
+        migration_hours_total += migration_hours
+        knowledge_hours_total += knowledge_hours
 
     remaining_wild_food = sum(
-        sum(values) * float(world.resource_spec(resource_id)["kcal_per_kg"])
+        sum(values)
+        * float(world.resource_spec(resource_id)["kcal_per_kg"])
+        * float(
+            world.resource_spec(resource_id).get(
+                "edible_yield_fraction", 1.0
+            )
+        )
         for resource_id, values in {
             **world.plant_stock_kg,
             **world.animal_stock_kg,
@@ -502,6 +631,19 @@ def _simulate_day(
         food_demand_kcal=round(food_demand, 3),
         food_acquired_kcal=round(food_acquired, 3),
         food_ratio=round(food_consumed / food_demand if food_demand else 1.0, 4),
+        food_ratio_household_min=round(
+            min(household_food_ratios) if household_food_ratios else 1.0,
+            4,
+        ),
+        food_ratio_household_p10=round(
+            _percentile(household_food_ratios, 0.10)
+            if household_food_ratios
+            else 1.0,
+            4,
+        ),
+        households_below_080=households_below_080,
+        migration_hours=round(migration_hours_total, 4),
+        knowledge_sharing_hours=round(knowledge_hours_total, 4),
         water_demand_litres=round(water_demand, 3),
         water_acquired_litres=round(water_acquired, 3),
         water_ratio=round(water_acquired / water_demand if water_demand else 1.0, 4),
@@ -568,21 +710,62 @@ def _fetch_water(
     available_hours: float,
     day: int,
     water_distance_cache: dict[int, float],
-) -> tuple[float, float]:
+) -> tuple[float, float, str]:
     distance_km = _cached_water_distance(
         world, runtime.camp_cell_index, water_distance_cache
     )
-    carry_capacity = 7.0 if day <= 1 else 18.0
+    mobile_people = [
+        person
+        for person in runtime.members
+        if person.mobility >= 0.5 and person.life_stage not in {"infant"}
+    ]
+    dependent_count = sum(
+        person.life_stage in {"infant", "toddler"}
+        or person.mobility < 0.5
+        for person in runtime.members
+        if person not in mobile_people
+    )
+    if day == 1:
+        escort_trips = math.ceil(dependent_count / 2.0)
+        required_hours = (
+            max(1, len(mobile_people)) * (_distance_walk_hours(distance_km) + 0.2)
+            + escort_trips * _distance_walk_hours(distance_km)
+        )
+        method = "travel_to_source_and_drink_without_container"
+        if required_hours <= available_hours:
+            world.water_volume_m3 = max(
+                0.0, world.water_volume_m3 - litres_needed / 1000.0
+            )
+            return required_hours, litres_needed, method
+        fraction = available_hours / required_hours if required_hours else 1.0
+        delivered = litres_needed * max(0.0, min(1.0, fraction))
+        world.water_volume_m3 = max(
+            0.0, world.water_volume_m3 - delivered / 1000.0
+        )
+        return available_hours, delivered, method
+
+    if runtime.water_container_capacity_l <= 0.0 and available_hours >= 0.5:
+        fiber = _nearest_material_kg(world, runtime, "fiber", 0.2)
+        wood = _nearest_material_kg(world, runtime, "wood", 0.5)
+        if fiber >= 0.15 and wood >= 0.4:
+            runtime.water_container_capacity_l = max(
+                1.5, len(mobile_people) * 1.5
+            )
+            runtime.water_container_built_day = day
+            available_hours -= 0.5
+    carry_capacity = runtime.water_container_capacity_l
+    if carry_capacity <= 0.0:
+        return available_hours, 0.0, "no_carrying_vessel"
     trips = litres_needed / carry_capacity
     hours_per_trip = _distance_walk_hours(distance_km) + 0.18
     required_hours = trips * hours_per_trip
     if required_hours <= available_hours:
         world.water_volume_m3 = max(0.0, world.water_volume_m3 - litres_needed / 1000.0)
-        return required_hours, litres_needed
+        return required_hours, litres_needed, "carried_in_expedient_vessels"
     fraction = available_hours / required_hours if required_hours else 1.0
     delivered = litres_needed * max(0.0, min(1.0, fraction))
     world.water_volume_m3 = max(0.0, world.water_volume_m3 - delivered / 1000.0)
-    return available_hours, delivered
+    return available_hours, delivered, "carried_in_expedient_vessels"
 
 
 def _advance_shelter(
@@ -602,6 +785,13 @@ def _advance_shelter(
     runtime.shelter_quality = min(
         1.0, runtime.shelter_quality + hours / 7.0 * material_factor
     )
+    if (
+        runtime.shelter_quality >= 0.75
+        and runtime.shelter_completed_day is None
+    ):
+        runtime.shelter_completed_day = (
+            world.elapsed_days if world.elapsed_days > 0 else None
+        )
 
 
 def _advance_tools(
@@ -620,6 +810,10 @@ def _advance_tools(
     )
     gain = hours * (0.3 if can_make else 0.08)
     runtime.tool_quality = min(1.0, runtime.tool_quality + gain)
+    if runtime.tool_quality >= 0.65 and runtime.tool_completed_day is None:
+        runtime.tool_completed_day = (
+            world.elapsed_days if world.elapsed_days > 0 else None
+        )
 
 
 def _advance_fire(
@@ -644,6 +838,8 @@ def _advance_fire(
     )
     success_threshold = hours * (0.27 if skilled else 0.035)
     runtime.fire_quality = 0.9 if attempt_value < success_threshold else 0.0
+    if runtime.fire_quality > 0.0 and runtime.fire_first_success_day is None:
+        runtime.fire_first_success_day = day
 
 
 def _harvest_food(
@@ -652,23 +848,19 @@ def _harvest_food(
     hours: float,
     target_kcal: float,
     consumption: dict[str, float],
+    harvest_details: dict[str, dict[str, float]],
 ) -> float:
     if hours <= 0.0 or target_kcal <= 0.0:
         return 0.0
     acquired = 0.0
     remaining_hours = hours
-    runtime_skills = runtime.skills
-    has_active_adult = any(
-        person.life_stage in {"adult", "elder"}
-        for person in runtime.members
-    )
     for resource_id, cell_index, _, distance_km in runtime.supply_options:
         if remaining_hours <= 0.02 or acquired >= target_kcal:
             break
         spec = world.resource_spec(resource_id)
         if not world.is_available(resource_id):
             continue
-        if not _can_harvest(spec, runtime_skills, has_active_adult):
+        if not _can_harvest_by_member(spec, runtime):
             continue
         if resource_id in world.plant_stock_kg:
             stock = world.plant_stock_kg[resource_id][cell_index]
@@ -680,18 +872,28 @@ def _harvest_food(
         effective_hours = remaining_hours - travel_hours
         if effective_hours <= 0.02:
             continue
+        edible_yield = float(spec.get("edible_yield_fraction", 1.0))
+        if edible_yield <= 0.0:
+            continue
         tool_factor = 0.65 + 0.45 * runtime.tool_quality
         harvest_rate = float(spec["harvest_kg_per_hour"]) * tool_factor
         processing_rate = float(spec["processing_hours_per_kg"])
-        hours_per_kg = 1.0 / max(0.05, harvest_rate) + processing_rate
-        kg_by_hours = effective_hours / hours_per_kg
-        kg_by_need = max(
-            0.0, (target_kcal - acquired) / float(spec["kcal_per_kg"])
+        hours_per_stock_kg = (
+            1.0 / max(0.05, harvest_rate)
+            + processing_rate * edible_yield
         )
-        kg = min(stock, kg_by_hours, kg_by_need)
-        if kg <= 0.001:
+        stock_kg_by_hours = effective_hours / hours_per_stock_kg
+        stock_kg_by_need = max(
+            0.0,
+            (target_kcal - acquired)
+            / (float(spec["kcal_per_kg"]) * edible_yield),
+        )
+        stock_kg = min(stock, stock_kg_by_hours, stock_kg_by_need)
+        if stock_kg <= 0.001:
             continue
-        used_hours = travel_hours + kg * hours_per_kg
+        harvest_hours = stock_kg / max(0.05, harvest_rate)
+        processing_hours = stock_kg * processing_rate * edible_yield
+        used_hours = travel_hours + harvest_hours + processing_hours
         remaining_hours -= used_hours
         if resource_id in world.plant_stock_kg:
             array = world.plant_stock_kg[resource_id]
@@ -699,18 +901,38 @@ def _harvest_food(
         else:
             array = world.animal_stock_kg[resource_id]
             capacity = world.animal_capacity_kg[resource_id][cell_index]
-        array[cell_index] -= kg
-        if capacity > 0.0 and kg / capacity > 0.55:
+        array[cell_index] -= stock_kg
+        if capacity > 0.0 and stock_kg / capacity > 0.55:
             if resource_id in world.plant_regen_condition:
                 world.plant_regen_condition[resource_id][cell_index] = max(
                     0.35,
                     world.plant_regen_condition[resource_id][cell_index] - 0.08,
                 )
-        runtime.food_store_kg[resource_id] = (
-            runtime.food_store_kg.get(resource_id, 0.0) + kg
+        success_rate = _processing_success_rate(resource_id, spec)
+        attempt_value = _stable_unit(
+            world.seed + world.elapsed_days * 997 + cell_index,
+            runtime.household_id,
         )
-        consumption[resource_id] = consumption.get(resource_id, 0.0) + kg
-        acquired += kg * float(spec["kcal_per_kg"])
+        edible_kg = stock_kg * edible_yield
+        details = harvest_details[resource_id]
+        if attempt_value > success_rate:
+            edible_kg = 0.0
+            details["processing_failures"] += 1
+        runtime.food_store_kg[resource_id] = (
+            runtime.food_store_kg.get(resource_id, 0.0) + edible_kg
+        )
+        consumption[resource_id] = (
+            consumption.get(resource_id, 0.0) + stock_kg
+        )
+        record_resource_harvest(world, resource_id, stock_kg)
+        details["stock_kg_removed"] += stock_kg
+        details["edible_food_kg"] += edible_kg
+        details["edible_kcal"] += edible_kg * float(spec["kcal_per_kg"])
+        details["harvest_hours"] += harvest_hours
+        details["processing_hours"] += processing_hours
+        details["travel_hours"] += travel_hours
+        details["processing_attempts"] += 1
+        acquired += edible_kg * float(spec["kcal_per_kg"])
     return acquired
 
 
@@ -785,14 +1007,53 @@ def _storage_target_fraction(day: int, start_day_of_year: int) -> float:
     return 5.0
 
 
-def _can_harvest(
+def _can_harvest_by_member(
     spec: dict[str, Any],
-    skills: set[str],
-    has_active_adult: bool,
+    runtime: HouseholdRuntime,
 ) -> bool:
-    if spec.get("common_knowledge") and has_active_adult:
-        return True
-    return spec["knowledge_skill"] in skills
+    for person in runtime.members:
+        if person.life_stage in {"infant", "toddler"}:
+            continue
+        if person.life_stage == "adult" or person.life_stage == "elder":
+            if spec.get("common_knowledge"):
+                return True
+        if any(
+            skill["id"] == spec["knowledge_skill"]
+            for skill in person.skills
+        ):
+            return True
+    return False
+
+
+def _processing_success_rate(
+    resource_id: str,
+    spec: dict[str, Any],
+) -> float:
+    rates = {
+        "cattail": 0.78,
+        "arrowhead": 0.72,
+        "mixed_berries": 0.95,
+        "hazelnut": 0.9,
+        "oak_acorn": 0.65,
+        "spring_greens": 0.82,
+        "fish": 0.7,
+        "waterfowl": 0.72,
+        "hare": 0.7,
+        "deer": 0.65,
+    }
+    return float(spec.get("processing_success_rate", rates.get(resource_id, 0.8)))
+
+
+def _choose_explorer(runtime: HouseholdRuntime) -> Person | None:
+    candidates = [
+        person
+        for person in runtime.members
+        if person.life_stage in {"adolescent", "adult", "elder"}
+        and person.mobility >= 0.5
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda person: person.id)
 
 
 def _build_supply_options(
@@ -895,6 +1156,7 @@ def _nearest_material_kg(
         stock = world.material_stock_kg[material_id][cell_index]
         amount = min(stock, remaining)
         world.material_stock_kg[material_id][cell_index] -= amount
+        record_material_harvest(world, material_id, amount)
         remaining -= amount
         gathered += amount
     return gathered
@@ -957,8 +1219,14 @@ def _summarize_windows(metrics: list[DayMetric]) -> dict[str, dict[str, Any]]:
         if not selected:
             continue
         food_ratios = [metric.food_ratio for metric in selected]
+        household_minimums = [
+            metric.food_ratio_household_min for metric in selected
+        ]
+        household_p10 = [
+            metric.food_ratio_household_p10 for metric in selected
+        ]
         water_ratios = [metric.water_ratio for metric in selected]
-        min_food = min(food_ratios)
+        min_food = min(household_minimums)
         min_water = min(water_ratios)
         average_food = mean(food_ratios)
         average_water = mean(water_ratios)
@@ -999,8 +1267,23 @@ def _summarize_windows(metrics: list[DayMetric]) -> dict[str, dict[str, Any]]:
             ),
             "capacity_margin": round(min(average_food, average_water) - 1.0, 4),
             "minimum_food_ratio": round(min_food, 4),
+            "minimum_household_food_ratio": round(min_food, 4),
+            "p10_household_food_ratio": round(mean(household_p10), 4),
             "minimum_water_ratio": round(min_water, 4),
             "average_food_ratio": round(average_food, 4),
+            "food_ratio_definition": (
+                "demand-weighted consumed calories divided by fixed daily demand; "
+                "minimum is the worst household-day, not a population average"
+            ),
+            "days_with_household_min_below_080": sum(
+                item.food_ratio_household_min < 0.8 for item in selected
+            ),
+            "longest_consecutive_household_min_below_080": (
+                _longest_streak(
+                    item.food_ratio_household_min < 0.8
+                    for item in selected
+                )
+            ),
             "average_water_ratio": round(average_water, 4),
             "worst_day": worst_metric.day,
             "shelter_fraction_end": selected[-1].shelter_fraction,
@@ -1092,16 +1375,241 @@ def _evaluate_paths(
     }
 
 
+def _build_distribution_diagnostics(
+    observations: list[dict[str, float]],
+) -> dict[str, Any]:
+    by_day: dict[int, list[dict[str, float]]] = defaultdict(list)
+    for observation in observations:
+        by_day[int(observation["day"])].append(observation)
+    daily: list[dict[str, float]] = []
+    for day, households in sorted(by_day.items()):
+        demand = sum(item["demand_kcal"] for item in households)
+        if demand <= 0.0:
+            continue
+        basic = (
+            sum(
+                min(item["available_kcal"], item["demand_kcal"])
+                for item in households
+            )
+            / demand
+        )
+        ideal = min(
+            1.0,
+            sum(item["available_kcal"] for item in households) / demand,
+        )
+        constrained = _constrained_transfer_ratio(households)
+        daily.append(
+            {
+                "day": float(day),
+                "basic_ratio": basic,
+                "ideal_costless_ratio": ideal,
+                "constrained_ratio": constrained,
+            }
+        )
+    basic_failure_days = sum(item["basic_ratio"] < 0.9 for item in daily)
+    ideal_failure_days = sum(
+        item["ideal_costless_ratio"] < 0.9 for item in daily
+    )
+    constrained_failure_days = sum(
+        item["constrained_ratio"] < 0.9 for item in daily
+    )
+    distribution_only_days = sum(
+        item["basic_ratio"] < 0.9
+        and item["ideal_costless_ratio"] >= 0.9
+        for item in daily
+    )
+    residual_total_days = sum(
+        item["ideal_costless_ratio"] < 0.9 for item in daily
+    )
+    return {
+        "classification": "diagnostic_only",
+        "costless_redistribution": {
+            "purpose": "upper-bound decomposition only; not a proposed behavior",
+            "basic_failure_days": basic_failure_days,
+            "ideal_upper_bound_failure_days": ideal_failure_days,
+            "distribution_only_failure_days": distribution_only_days,
+            "residual_supply_or_labor_failure_days": residual_total_days,
+        },
+        "constrained_cooperation": {
+            "assumptions": (
+                "surplus can move to a household within 1 km with 20 percent "
+                "labor and transfer loss"
+            ),
+            "failure_days": constrained_failure_days,
+            "improvement_days": sum(
+                item["constrained_ratio"] > item["basic_ratio"] + 0.05
+                for item in daily
+            ),
+        },
+        "daily": daily,
+    }
+
+
+def _constrained_transfer_ratio(
+    households: list[dict[str, float]],
+) -> float:
+    demand = sum(item["demand_kcal"] for item in households)
+    if demand <= 0.0:
+        return 1.0
+    satisfied = sum(
+        min(item["available_kcal"], item["demand_kcal"])
+        for item in households
+    )
+    deficits = [
+        {
+            "remaining": max(
+                0.0, item["demand_kcal"] - item["available_kcal"]
+            ),
+            "x": item["camp_x"],
+            "y": item["camp_y"],
+        }
+        for item in households
+        if item["available_kcal"] < item["demand_kcal"]
+    ]
+    surpluses = [
+        {
+            "remaining": item["available_kcal"] - item["demand_kcal"],
+            "x": item["camp_x"],
+            "y": item["camp_y"],
+        }
+        for item in households
+        if item["available_kcal"] > item["demand_kcal"]
+    ]
+    for deficit in sorted(deficits, key=lambda item: item["remaining"], reverse=True):
+        while deficit["remaining"] > 0.0:
+            candidates = [
+                surplus
+                for surplus in surpluses
+                if surplus["remaining"] > 0.0
+                and math.hypot(
+                    (deficit["x"] - surplus["x"]) * 0.1,
+                    (deficit["y"] - surplus["y"]) * 0.1,
+                )
+                <= 1.0
+            ]
+            if not candidates:
+                break
+            donor = min(
+                candidates,
+                key=lambda surplus: math.hypot(
+                    deficit["x"] - surplus["x"],
+                    deficit["y"] - surplus["y"],
+                ),
+            )
+            distance_km = math.hypot(
+                (deficit["x"] - donor["x"]) * 0.1,
+                (deficit["y"] - donor["y"]) * 0.1,
+            )
+            efficiency = max(0.6, 0.9 - distance_km * 0.2)
+            moved = min(
+                deficit["remaining"] / efficiency,
+                donor["remaining"],
+            )
+            satisfied += moved * efficiency
+            deficit["remaining"] -= moved * efficiency
+            donor["remaining"] -= moved
+    return min(1.0, satisfied / demand)
+
+
+def _build_acquisition_paths(
+    runtimes: dict[str, HouseholdRuntime],
+    metrics: list[DayMetric],
+    harvest_details: dict[str, dict[str, float]],
+    baseline: dict[str, Any],
+    water_method_counts: dict[str, int],
+) -> dict[str, Any]:
+    household_count = len(runtimes)
+    return {
+        "water": {
+            "day_one_method": "travel to source and drink without a container",
+            "later_method": "daily refill of expedient fiber-and-wood carrying vessels",
+            "water_is_not_added_without_fetch_labour": True,
+            "method_household_days": dict(sorted(water_method_counts.items())),
+            "container_built_households": sum(
+                runtime.water_container_built_day is not None
+                for runtime in runtimes.values()
+            ),
+            "minimum_container_capacity_l": min(
+                (
+                    runtime.water_container_capacity_l
+                    for runtime in runtimes.values()
+                ),
+                default=0.0,
+            ),
+        },
+        "food": {
+            resource_id: {
+                "stock_kg_removed_per_person_day": round(
+                    values["stock_kg_removed"]
+                    / max(1, len(metrics) * 4000),
+                    6,
+                ),
+                "edible_food_kg_per_person_day": round(
+                    values["edible_food_kg"]
+                    / max(1, len(metrics) * 4000),
+                    6,
+                ),
+                "edible_kcal_per_person_day": round(
+                    values["edible_kcal"]
+                    / max(1, len(metrics) * 4000),
+                    6,
+                ),
+                "harvest_hours": round(values["harvest_hours"], 4),
+                "processing_hours": round(values["processing_hours"], 4),
+                "travel_hours": round(values["travel_hours"], 4),
+            }
+            for resource_id, values in sorted(harvest_details.items())
+        },
+        "shelter": _completion_summary(
+            runtimes, "shelter_completed_day"
+        ),
+        "fire": _completion_summary(runtimes, "fire_first_success_day"),
+        "tools": _completion_summary(runtimes, "tool_completed_day"),
+        "time_models": {
+            "household_count": household_count,
+            "days": len(metrics),
+            "test_kind": "fixed_population_demand_pressure_test",
+            "body_consequences": "not implemented",
+        },
+        "raw_baseline_reference": baseline["world_id"],
+    }
+
+
+def _completion_summary(
+    runtimes: dict[str, HouseholdRuntime],
+    attribute: str,
+) -> dict[str, Any]:
+    values = sorted(
+        int(getattr(runtime, attribute))
+        for runtime in runtimes.values()
+        if getattr(runtime, attribute) is not None
+    )
+    return {
+        "households_completed": len(values),
+        "households_total": len(runtimes),
+        "median_completion_day": (
+            values[len(values) // 2] if values else None
+        ),
+        "last_completion_day": values[-1] if values else None,
+    }
+
+
 def _build_food_audit(
     initial_world: WorldState,
     population: PopulationState,
     runtimes: dict[str, HouseholdRuntime],
     metrics: list[DayMetric],
     consumption: dict[str, float],
+    harvest_details: dict[str, dict[str, float]],
 ) -> dict[str, Any]:
     initial_total_kcal = sum(
         sum(values)
         * float(initial_world.resource_spec(resource_id)["kcal_per_kg"])
+        * float(
+            initial_world.resource_spec(resource_id).get(
+                "edible_yield_fraction", 1.0
+            )
+        )
         for resource_id, values in {
             **initial_world.plant_stock_kg,
             **initial_world.animal_stock_kg,
@@ -1168,6 +1676,16 @@ def _build_food_audit(
             key: round(value, 3)
             for key, value in sorted(consumption.items())
         },
+        "harvest_details": {
+            key: {metric: round(value, 6) for metric, value in values.items()}
+            for key, values in sorted(harvest_details.items())
+        },
+        "unit_contract": {
+            "plant_stock": "edible biomass kg",
+            "animal_stock": "live biomass kg",
+            "harvested_kg": "stock-basis kg removed from the environment",
+            "edible_food_kg": "kg entering household food stores after yield and processing success",
+        },
         "minimum_daily_household_food_success_rate": round(
             min(metric.food_ratio for metric in metrics), 4
         ),
@@ -1182,3 +1700,26 @@ def _stable_unit(seed: int, label: str) -> float:
     for char in f"{seed}:{label}":
         value = (value * 131 + ord(char)) % 1_000_000_007
     return value / 1_000_000_007
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 1.0
+    ordered = sorted(values)
+    index = min(
+        len(ordered) - 1,
+        max(0, int((len(ordered) - 1) * fraction)),
+    )
+    return ordered[index]
+
+
+def _longest_streak(values: Any) -> int:
+    longest = 0
+    current = 0
+    for value in values:
+        if value:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest

@@ -15,13 +15,13 @@ Phase 1 审计工具：
 ```powershell
 py -3.12 -m compileall -q tools tests
 py -3.12 -m unittest discover -s tests -v
-py -3.12 tools\run_phase1.py --days 365 --allow-failed
+py -3.12 tools\run_phase1.py --version v2 --days 365 --allow-failed
 git diff --check
 git status
 ```
 
 `run_phase1.py` 是 Phase 1 的端到端命令。它会生成固定世界和人口、运行专项核验并重新生成
-三项报告。门禁未通过时返回非零退出码；`--allow-failed` 只用于保存失败报告。
+指定版本的报告。门禁未通过时返回非零退出码；`--allow-failed` 只用于保存失败报告。
 
 `phase1_audit.py` 是底层结构审计器，直接读取尚未注入生成快照的源文件，因此不能代替
 `run_phase1.py` 的端到端结果。

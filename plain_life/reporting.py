@@ -1,9 +1,8 @@
-"""Markdown reports for the Phase 1 validation package."""
+"""Markdown reports for a versioned Phase 1 validation package."""
 
 from __future__ import annotations
 
 import json
-from statistics import mean
 from typing import Any, Mapping
 
 from .environment import WorldState, environment_summary
@@ -15,16 +14,33 @@ def render_environment_report(
     world: WorldState,
     population: PopulationState,
     run_result: SurvivalRunResult,
+    version: str,
 ) -> str:
     environment = environment_summary(world)
+    climate = world.baseline.raw["climate"]
     resources = environment["resources"]
-    materials = environment["materials"]
-    consumption = run_result.resource_consumption_kg
+    ledgers = run_result.resource_ledger
     lines = [
-        "# 环境资源清单",
+        f"# 环境资源清单（{version}）",
         "",
-        "本报告由 `tools/run_phase1.py` 从固定基线和种子生成。当前基线是可复算的模型假设，"
-        "不是已校准到现实地点的实测生态数据。",
+        "本报告是版本化专项核验结果。`v1` 的秋季温带基线和失败报告保持独立，不被本版本覆盖。",
+        "",
+        "## 先纠正设定",
+        "",
+        "| 项目 | v1 | v2 | 处理说明 |",
+        "| --- | --- | --- | --- |",
+        "| 气候 | 温带泛滥平原，年均温约 13.25°C，年降雨约 795 mm | "
+        "暖湿气候，年均温约 20.25°C，年降雨约 1460 mm | "
+        "按已确认的暖湿环境修正，不只是改名 |",
+        "| 投放季节 | 第 260 日，偏秋季坚果成熟期 | 第 90 日，暖季早期 | "
+        "恢复到需求原有的暖季早期草案；变化列为修正，不作为提高通过率的调参 |",
+        "| 集中投放 | 初始化阶段直接分布到 231 个营地 | 投放瞬间全部位于同一单元，"
+        "首日探索后才自行选址 | 分开“投放瞬间”和“投放后行动”，迁移消耗白天时间 |",
+        "| 知识 | 家庭技能集合直接共享 | 采集资格按实际人物技能判定，"
+        "探索信息共享计入沟通时间 | 家庭成员不会自动同步见闻 |",
+        "",
+        "v2 没有以季节调整掩盖 v1 的失败；v1 的失败结论仍为：最初数日可行，"
+        "最初数周以后失败，年度稳定供给失败。",
         "",
         "## 世界快照",
         "",
@@ -32,26 +48,53 @@ def render_environment_report(
         f"- 随机种子：`{environment['seed']}`",
         f"- 初始状态指纹：`{environment['fingerprint']}`",
         f"- 初始日：第 `{environment['start_day_of_year']}` 日",
-        f"- 网格：`100 x 50`，单元边长 `100 m`，总面积 `50 km²`",
+        "- 网格：`100 x 50`，单元边长 `100 m`，总面积 `50 km²`",
         f"- 投放点：`({environment['drop_point']['x']}, "
         f"{environment['drop_point']['y']})`，距水 "
         f"`{environment['drop_point']['distance_to_water_km']} km`",
+        f"- 投放瞬间营地数：`{run_result.migration_summary['drop_instant_camps']}`",
+        f"- 首日探索和自行选址后的营地数："
+        f"`{run_result.migration_summary['camps_after_day_one_selection']}`",
+        f"- 试运行后的不同营地数：`{run_result.migration_summary['final_camps']}`",
         "",
-        "环境在人口创建前完整物化，并保留初始指纹。专项试运行使用世界副本，"
-        f"初始世界未被改写：`{run_result.initial_world_unchanged}`。",
+        "专项试运行使用世界副本；初始世界指纹未被改写："
+        f"`{run_result.initial_world_unchanged}`。",
         "",
-        "## 地形与土地",
+        "## 暖湿气候核对",
         "",
-        "| 土地类型 | 单元数 | 初始意义 |",
-        "| --- | ---: | --- |",
+        "| 月份 | 温度 °C | 降雨 mm | 蒸发 mm | 降雨日比例 |",
+        "| ---: | ---: | ---: | ---: | ---: |",
     ]
+    for index in range(12):
+        lines.append(
+            f"| {index + 1} | {climate['temperature_c'][index]} | "
+            f"{climate['rainfall_mm'][index]} | "
+            f"{climate['evaporation_mm'][index]} | "
+            f"{climate['rainy_day_fraction'][index]} |"
+        )
+    lines.extend(
+        [
+            "",
+            f"- 年降雨：`{sum(climate['rainfall_mm'])} mm`。",
+            f"- 年均温：`{sum(climate['temperature_c']) / 12:.2f}°C`。",
+            "- 湿润生长季较长，仍有明显季节变化；冬季不是冻结气候，"
+            "但降雨、蒸发、食物成熟和动物繁殖季节都参与逐日变化。",
+            "- 气候参数仍是模型假设，MODEL 编号只表示内部可复算参数，"
+            "不能作为现实地点依据。",
+            "",
+            "## 地形与土地",
+            "",
+            "| 土地类型 | 单元数 | 初始意义 |",
+            "| --- | ---: | --- |",
+        ]
+    )
     land_meanings = {
         "water": "封闭地表水体，饮水和鱼类的来源",
-        "wetland": "季节性积水，水生可食植物集中区",
+        "wetland": "季节性积水，水生可食植物和纤维集中区",
         "floodplain": "肥力较高但存在洪水风险",
         "meadow": "可居住和可开垦地，浆果与纤维",
-        "forest_edge": "林地与空地过渡区，木材、坚果和动物",
-        "woodland": "橡子、榛子、木材和鹿的集中区",
+        "forest_edge": "林地与空地过渡区",
+        "woodland": "木材和动物栖息地；坚果只在随后季节成熟",
         "upland": "坡度和排水较高，石材较多",
     }
     for land_class, count in environment["habitat_counts"].items():
@@ -61,54 +104,74 @@ def render_environment_report(
     lines.extend(
         [
             "",
-            f"- 可居住单元：`{environment['habitable_cells']}`",
-            f"- 初始可开垦单元：`{environment['cultivable_cells']}`",
-            "- 连续性使用会按年降低肥力，休耕会缓慢恢复；具体参数见"
-            " `data/phase1/environment_baseline.json`。",
+            f"- 可居住单元：`{environment['habitable_cells']}`。",
+            f"- 初始可开垦单元：`{environment['cultivable_cells']}`。",
+            "- 土地肥力、排水、开垦成本和连续利用变化仍为模型假设，"
+            "具体参数见 `environment_baseline.json`。",
             "",
             "## 淡水与封闭边界",
             "",
-            f"- 初始地表水体积：`{environment['water']['surface_volume_m3']} m³`",
-            f"- 地表水容量：`{environment['water']['surface_capacity_m3']} m³`",
-            f"- 初始地下水储量：`{environment['water']['groundwater_m3']} m³`",
-            f"- 初始水质指数：`{environment['water']['quality']}`",
-            "- 降雨是唯一水量输入；蒸发和可选地表排水只作为输出。",
+            f"- 初始地表水体积：`{environment['water']['surface_volume_m3']} m³`。",
+            f"- 地表水容量：`{environment['water']['surface_capacity_m3']} m³`。",
+            f"- 初始地下水储量：`{environment['water']['groundwater_m3']} m³`。",
+            f"- 初始水质指数：`{environment['water']['quality']}`。",
+            "- 降雨是唯一水量输入；蒸发和可选排水只作为输出。",
             "- 无外部鱼群、泥沙、种子或其他生物输入。",
-            "- 边界不移动、不伤害探索者、不主动提示，并以同一规则处理所有穿越尝试。",
+            "- 同一单元格的边界尝试结果固定：不移动、不伤害、不提示。",
             "",
-            "## 食品资源",
+            "## 资源账目",
             "",
-            "| 资源 | 初始存量 kg | 承载量 kg | 可取用季 | 年恢复比例 | 证据 |",
-            "| --- | ---: | ---: | --- | ---: | --- |",
+        "账目口径：期末存量 = 期初存量 + 新增量 - 采集或捕获量 "
+        "- 自然损失 ± 地图内部转移。",
+        f"本次账目来自一条连续世界副本，持续 `{run_result.days}` 天，"
+        "没有把一个或多个副本的消耗混在一起。",
+            "",
+            "| 资源 | 期初 kg | 新增 kg | 采集/捕获 kg | 自然损失 kg | "
+            "内部转移 kg | 期末 kg | 闭合误差 kg | 非负 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
-    for resource_id, item in resources.items():
-        season = item["availability_day_range"]
+    for resource_id, ledger in ledgers.items():
         lines.append(
-            f"| `{resource_id}` | {item['stock_kg_at_start']} | "
-            f"{item['capacity_kg']} | {season[0]}–{season[1]} | "
-            f"{item['annual_recovery_fraction']} | "
-            f"`{', '.join(item['evidence'])}` |"
+            f"| `{resource_id}` | {ledger['opening_stock_kg']} | "
+            f"{ledger['additions_kg']} | {ledger['harvested_kg']} | "
+            f"{ledger['natural_loss_kg']} | "
+            f"{ledger['internal_transfer_kg']} | "
+            f"{ledger['closing_stock_kg']} | "
+            f"{ledger['closure_error_kg']} | {ledger['non_negative']} |"
         )
     lines.extend(
         [
             "",
-            "季节性、成熟度、栖息地和再生条件独立于人物需求生成。人物首次接触时，"
-            "只能从已探索区域、当前成熟资源和自身可操作知识中获取。",
+            "### 单位与再生语义",
             "",
-            "### 本次试运行消耗",
-            "",
-            "| 资源 | 消耗 kg |",
-            "| --- | ---: |",
+            "| 资源 | 存量口径 | 可食比例 | 季节窗口 | 再生模型 |",
+            "| --- | --- | ---: | --- | --- |",
         ]
     )
-    for resource_id, kg in consumption.items():
-        lines.append(f"| `{resource_id}` | {kg} |")
+    for resource_id, resource in resources.items():
+        season = resource["availability_day_range"]
+        lines.append(
+            f"| `{resource_id}` | `{resource['stock_basis']}` | "
+            f"{resource['edible_yield_fraction']} | "
+            f"{season[0]}–{season[1]} | "
+            f"`{resource.get('regeneration_model', resource.get('growth_model', 'unspecified'))}` |"
+        )
     lines.extend(
         [
             "",
-            "过度采集超过单格承载量 55% 时会降低该格下一年度的植物恢复条件。"
-            "动物采用受容量上限约束的逻辑增长，捕猎会降低当前数量。",
+            "- 植物存量是地图上的可食生物量；动物存量是活体重量。",
+            "- 鱼类、鹿、兔和水禽的捕获量先按活体扣除，再乘 `edible_yield_fraction` "
+            "进入家庭食物。",
+            "- 本次试运行是一条连续世界副本；没有合并多个副本的消耗。",
+            "- 地图内部迁移不复制资源；家庭之间的诊断性重分配不写入资源账，"
+            "因此正式内部转移记录为零。",
+            "- 植物年恢复比例在可取用季开始时只应用一次，不是每个时间步重复添加。",
+            "- 成熟变化在初始化时决定期初状态，不记为再生新增；"
+            "季节外的实际生物量增长才计入新增。",
+            "- 鱼类不再从零库存自动恢复 1% 承载量；枯竭后只能通过实际存活生物量增长恢复。",
+            "- 自然死亡、腐坏和采集前损失尚未实现，因此账表里的自然损失为零是"
+            "声明中的模型缺口，不是完整生态结论。",
             "",
             "## 材料与加工",
             "",
@@ -116,7 +179,7 @@ def render_environment_report(
             "| --- | ---: | ---: | ---: | --- |",
         ]
     )
-    for material_id, item in materials.items():
+    for material_id, item in environment["materials"].items():
         lines.append(
             f"| `{material_id}` | {item['stock_kg_at_start']} | "
             f"{item['capacity_kg']} | {item['renewal_fraction_per_year']} | "
@@ -127,75 +190,89 @@ def render_environment_report(
             "",
             "## 依据、假设与待验证项",
             "",
-            "### 已由需求确定",
+            "### 需求依据",
             "",
-            "- 50 平方公里封闭世界。",
-            "- 环境先存在，人物后投放。",
-            "- 不得按人物需求临时补资源。",
+            "- 50 平方公里封闭世界，环境先于人物。",
+            "- 暖湿环境，暖季早期为默认投放草案。",
             "- 降雨为输入，蒸发和排水只能为输出。",
-            "- 无外部生物或物资输入。",
+            "- 人物需要承担饮水、食物、遮蔽、火、工具、储存和协作的实际成本。",
             "",
-            "### 当前模型假设",
+            "### 模型假设",
             "",
-            "- 温带泛滥平原气候和 12 个月降雨、蒸发、温度序列。",
-            "- 所有物种产量、成熟期、加工时间、采食热量和捕获难度。",
-            "- 地表水为封闭盆地水体，由本地降雨和径流维持。",
-            "- 材料初始容量、更新率和土地肥力变化。",
+            "- 气候和气候的长期值属于 v2 参数化草案。",
+            "- 物种产量、热值、可食比例、加工失败率和捕获率属于内部假设。",
+            "- 地下水和地表水的容量、径流、污染稀释属于内部假设。",
+            "- 所有 MODEL-* 编号都表示模型参数，不是现实证据。",
             "",
             "### 待验证",
             "",
-            "- 各资源产量与恢复比例尚无真实地点校准。",
-            "- 鱼、鹿、兔和水禽的捕获率及捕猎恢复尚未做独立参数试验。",
-            "- 水质只保留距人活动区的稀释底线，污染传播仍是简化模型。",
-            "- 连续开垦后的肥力下降和弃耕恢复没有与长期农业参数联调。",
+            "- 暖湿气候参数需要由明确地点或气候类别确认。",
+            "- 每个资源产量、恢复、加工和捕获参数需要独立参数试验。",
+            "- 水质污染传播仍是简化模型。",
+            "- 连续使用土地的变化没有接入正式农业和定居过程。",
             "",
             "## 机器可检查依据",
             "",
             f"- 环境指纹：`{world.initial_fingerprint}`",
             f"- 人口指纹：`{population.fingerprint}`",
-            "- 原始参数：`data/phase1/environment_baseline.json`",
+            f"- 试运行类型：`{run_result.test_kind}`",
+            "- 原始参数：`data/phase1/versions/v2/environment_baseline.json`",
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_survival_report(run_result: SurvivalRunResult) -> str:
+def render_survival_report(
+    run_result: SurvivalRunResult,
+    version: str,
+) -> str:
     windows = run_result.window_results
     paths = run_result.path_results
     all_windows_pass = run_result.days >= 365 and all(
         item["status"] == "evaluated" for item in windows.values()
     )
     lines = [
-        "# 开局生存核验报告",
+        f"# 开局生存核验报告（{version}）",
+        "",
+        f"试运行类型：`{run_result.test_kind}`。这是一项固定人口需求压力测试，"
+        "不代表这些人真实存活了一年。",
+        "",
+        "当前模型没有把饥饿、感染、伤害和死亡反馈到体重、劳动能力或人口需求。"
+        "因此本报告不能被称为动态生存测试，也不能宣称已有完整年度生存结论。",
         "",
         (
-            "当前年度专项核验未通过。最初几天存在可行生存路径，但当前无群体分享、"
-            "无经济交换的模型下，中期和年度食物获取出现决定性缺口。"
+            "年度检查未通过。"
             if run_result.days >= 365 and not all_windows_pass
-            else "当前结果只覆盖部分时间窗，不能视为年度核验结论。"
+            else "当前只覆盖部分时间窗，不能视为年度结论。"
             if run_result.days < 365
-            else "当前年度专项核验通过。"
+            else "当前年度检查通过。"
         ),
         "",
-        "试运行只测试角色已经定义的基础生存行为，不作为正式世界历史，也不代表已经实现"
-        "可信的人类社会模拟。",
+        "## 时间窗与满足率口径",
         "",
-        "## 时间窗",
+        "`平均食物满足率` 是每日实际消费热量除以固定人口需求后，再按日平均。"
+        "`最低食物满足率` 是最困难的单个家庭日，不是全体人口平均值。"
+        "`P10 家庭满足率` 展示最困难十分之一家庭的水平。",
         "",
-        "| 时间窗 | 结果 | 瓶颈 | 平均食物满足率 | 最低食物满足率 | "
-        "最低饮水满足率 | 最可能失败 |",
-        "| --- | --- | --- | ---: | ---: | ---: | --- |",
+        "| 时间窗 | 结果 | 平均食物满足率 | 最低家庭日满足率 | "
+        "P10 家庭满足率 | 最低饮水满足率 | 低于 80% 的家庭日 | "
+        "最长连续不足 80% |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for window_id, item in windows.items():
         lines.append(
-            f"| `{window_id}` | {item['status']} | {item['bottleneck']} | "
-            f"{item['average_food_ratio']} | {item['minimum_food_ratio']} | "
-            f"{item['minimum_water_ratio']} | {item['likely_failure']} |"
+            f"| `{window_id}` | {item['status']} | "
+            f"{item['average_food_ratio']} | "
+            f"{item['minimum_household_food_ratio']} | "
+            f"{item['p10_household_food_ratio']} | "
+            f"{item['minimum_water_ratio']} | "
+            f"{item['days_with_household_min_below_080']} | "
+            f"{item['longest_consecutive_household_min_below_080']} |"
         )
     lines.extend(
         [
             "",
-            "## 可行获取路径",
+            "## 需求链结果",
             "",
             "| 需求链 | 结果 | 路径或失败原因 |",
             "| --- | --- | --- |",
@@ -205,54 +282,95 @@ def render_survival_report(run_result: SurvivalRunResult) -> str:
         lines.append(
             f"| `{path_id}` | {item['status']} | {item['solution']} |"
         )
+    household_total = run_result.acquisition_paths["time_models"][
+        "household_count"
+    ]
     lines.extend(
         [
             "",
-            "## 已确认的可行部分",
+            "## 无容器饮水路径",
             "",
-            "- 淡水位点可从投放区到达。",
-            "- 无容器时可以直接饮用；照护者能够为不能自行取水的人送水。",
-            "- 最初三天可通过浆果、榛子、橡子、香蒲、慈姑和鱼类建立食物链。",
-            "- 木质和纤维材料足以开始搭建遮蔽。",
-            "- 有实际操作技能的人可以尝试摩擦取火，失败后仍可继续尝试。",
-            "- 石、木原料支持渐进式工具制作，缺少关键工匠不会被自动补齐。",
+            f"- 第 1 日：`{run_result.acquisition_paths['water']['day_one_method']}`。",
+            f"- 第 2 日起：`{run_result.acquisition_paths['water']['later_method']}`。",
+            f"- 已建造携带容器的家庭："
+            f"`{run_result.acquisition_paths['water']['container_built_households']} / "
+            f"{household_total}`。",
+            f"- 最小容器容量："
+            f"`{run_result.acquisition_paths['water']['minimum_container_capacity_l']} L`。",
+            "- 送水不是自动入仓：每次取水都计算到水源的往返时间，"
+            "并使用纤维和木材制作的实际携带容器。",
+            "- 行动受限者和婴幼儿由照护者带到水边或用水具带回；"
+            "缺少容器时没有隐藏的家庭水库存。",
             "",
-            "## 主要瓶颈",
+            "## 初期食物加工路径",
             "",
-            "- 当前没有定义人物之间的食物再分配、交换或互助决策。试运行不假设家庭自动共享，"
-            "因此掌握橡子加工等技能的少数家庭会先取得高热量库存，没有技能的家庭持续失败。",
-            "- 4000 人在 50 平方公里内的局部采集速度超过家庭自行探索和迁移的恢复速度。",
-            "- 家庭照护会显著削减可劳动时间；幼儿、老人和行动受限者集中于部分家庭时，"
-            "这些家庭的获取能力明显更低。",
-            "- 食物储存需要处理、干燥和保存安排，现有基础行为只保留按物种腐败率计算的简化仓库。",
+            "| 资源 | 活体/存量扣除 kg | 可食食物 kg | 可食热量 kcal | "
+            "采集小时 | 加工小时 | 行程小时 | 加工失败次数 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for resource_id, item in run_result.harvest_details.items():
+        if item["stock_kg_removed"] <= 0.0 and item["processing_attempts"] == 0:
+            continue
+        lines.append(
+            f"| `{resource_id}` | {item['stock_kg_removed']} | "
+            f"{item['edible_food_kg']} | {item['edible_kcal']} | "
+            f"{item['harvest_hours']} | {item['processing_hours']} | "
+            f"{item['travel_hours']} | {item['processing_failures']} |"
+        )
+    lines.extend(
+        [
             "",
-            "## 最可能失败环节",
+            "- 橡子和水生地下部分不是原料公斤直接等于热量；"
+            "表中已经扣除获取时间、加工时间和加工失败。",
+            "- 加工失败会消耗实际采集到的原料，但不会产生可食热量。",
             "",
-            (
-                f"年度检查的最差日为第 `{min(run_result.metrics, key=lambda item: item.food_ratio).day}` "
-                "天，首要风险是食物而不是饮水。"
-            ),
+            "## 遮蔽、火和工具",
             "",
-            "在补齐食物分配、劳动交换、信任形成与家庭间决策前，不能通过扩大资源产量来"
-            "宣布年度生存可行。该缺口是需求缺口，不是可由试运行隐藏的参数问题。",
+            f"- 遮蔽完成家庭："
+            f"`{run_result.acquisition_paths['shelter']['households_completed']}`，"
+            f"中位完成日："
+            f"`{run_result.acquisition_paths['shelter']['median_completion_day']}`。",
+            f"- 火首次成功家庭："
+            f"`{run_result.acquisition_paths['fire']['households_completed']}`，"
+            f"中位成功日："
+            f"`{run_result.acquisition_paths['fire']['median_completion_day']}`。",
+            f"- 工具达到可用阈值家庭："
+            f"`{run_result.acquisition_paths['tools']['households_completed']}`，"
+            f"中位完成日："
+            f"`{run_result.acquisition_paths['tools']['median_completion_day']}`。",
+            "- 每次遮蔽、取火和工具尝试都消耗实际材料和劳动时间。",
             "",
-            "## 探索与迁移",
+            "## 分配对照",
             "",
-            f"- 初始家庭营地：`{run_result.migration_summary['initial_camps']}` 个不同单元。",
-            f"- 发生迁移的家庭：`{run_result.migration_summary['households_that_migrated']}`。",
-            f"- 迁移事件：`{run_result.migration_summary['migration_events']}`。",
-            f"- 年度结束时探索半径上限："
-            f"`{run_result.migration_summary['known_cell_radius_km_end']} km`。",
-            "- 探索知识按家庭分别维护；没有全体共享地图。",
-            "- 搬迁不等于形成政权，也不自动建立新群体认同。",
+            "以下对照仅用于诊断，不能写入正式人物行为。",
             "",
-            "## 必须修正的需求缺口",
+            "| 对照 | 失败天数 | 说明 |",
+            "| --- | ---: | --- |",
+            f"| 当前基础行为 | "
+            f"{run_result.distribution_diagnostics['costless_redistribution']['basic_failure_days']} | "
+            "家庭独立仓库和当前基础行为 |",
+            f"| 食物无成本重新分配上限 | "
+            f"{run_result.distribution_diagnostics['costless_redistribution']['ideal_upper_bound_failure_days']} | "
+            "只用于拆分分配问题，不代表可实现方案 |",
+            f"| 受 1 km 距离和 20% 损失约束的协作 | "
+            f"{run_result.distribution_diagnostics['constrained_cooperation']['failure_days']} | "
+            "诊断性最小协作，不是正式经济或信任系统 |",
             "",
-            "1. 定义家庭之间在食物、火种、照护和知识上的交换或拒绝规则。",
-            "2. 定义信任形成速度与信息传播范围，避免依赖全知指挥。",
-            "3. 明确个人和家庭迁移决策所需的有限信息，以及出发、返程和放弃规则。",
-            "4. 明确伤害、疾病、体力消耗和死亡如何影响后续劳动能力。",
-            "5. 明确储存、加工场地和食品保质条件，尤其是橡子、鱼和肉类。",
+            "- 仅由理想分配可消除的不足天数："
+            f"`{run_result.distribution_diagnostics['costless_redistribution']['distribution_only_failure_days']}`。",
+            "- 即使无成本重新分配后仍不足的天数："
+            f"`{run_result.distribution_diagnostics['costless_redistribution']['residual_supply_or_labor_failure_days']}`。",
+            "- 因此不能预设“缺少合作是主要原因”；必须同时报告总供给、劳动时间、"
+            "加工能力、可达范围和分配不均的各自贡献。",
+            "",
+            "## 必须保留的测试限制",
+            "",
+            "- 家庭内部食物共享是当前基线假设，尚未实现有差异、可拒绝和会冲突的"
+            "家庭成员分配行为。",
+            "- 家庭之间没有自动交换或信任形成规则。",
+            "- 没有体重变化、失能、疾病、死亡和劳动能力衰减。",
+            "- 迁移决策是有限信息下的规则诊断，不代表完整人物心理模型。",
         ]
     )
     return "\n".join(lines).rstrip() + "\n"
@@ -262,19 +380,22 @@ def render_initialization_report(
     population: PopulationState,
     run_result: SurvivalRunResult,
     audit_findings: list[Mapping[str, Any]],
+    version: str,
+    gate_status: str,
 ) -> str:
     summary = population.summary()
-    blocker_count = sum(
-        finding["severity"] == "blocker" for finding in audit_findings
-    )
-    population_blockers = [
+    all_blockers = [
         finding
         for finding in audit_findings
+        if finding["severity"] == "blocker"
+    ]
+    population_blockers = [
+        finding
+        for finding in all_blockers
         if finding["section"] == "initialization"
-        and finding["severity"] == "blocker"
     ]
     lines = [
-        "# 初始化一致性检查报告",
+        f"# 初始化一致性检查报告（{version}）",
         "",
         f"人口指纹：`{population.fingerprint}`。",
         "",
@@ -288,11 +409,11 @@ def render_initialization_report(
         f"- 哺乳关系：`{summary['lactation_links']}`。",
         f"- 婴儿：`{summary['infants']}`，有照护者："
         f"`{summary['infants_with_caregiver']}`。",
-        f"- 初始化审计阻断项：`{len(population_blockers)}`；全部审计阻断项："
-        f"`{blocker_count}`。",
+        f"- 人口内部阻断项：`{len(population_blockers)}`；"
+        f"全部审计阻断项：`{len(all_blockers)}`。",
         "",
-        "人口内部结构一致，但与生态的年度相容性未通过。内部一致不能抵消生存资源的"
-        "分配和再生缺口。",
+        "人口内部结构通过不等于 Phase 1 整体通过。当前整体门禁状态为 "
+        f"`{gate_status}`：见下方阻断证据。",
         "",
         "## 年龄与家庭",
         "",
@@ -315,10 +436,11 @@ def render_initialization_report(
     lines.extend(
         [
             "",
-            "- 家庭由角色模板生成，亲子和伴侣关系在同一次初始化中建立。",
-            "- 婴儿均有照护者、活产事件和哺乳关系；照护者引用可解析。",
-            "- 人物只有一次新世界初始化，不把旧职位、财产或权力转为新资产。",
-            "- 家庭内部允许依赖、矛盾和不平等，不能被强制视为完全合作单位。",
+            "- 家庭角色、年龄、亲子和伴侣关系在同一初始化过程中生成。",
+            "- 婴儿都有照护者、活产事件和哺乳关系。",
+            "- v2 不再把家庭技能集合自动视为个人知识；采集资格按实际成员技能判断。",
+            "- 家庭内部当前仍有共同食物仓库假设。有差异、可拒绝、会冲突的"
+            "家庭分配行为尚未定义，因此不能把这份人口快照当作完整家庭行为验收结果。",
             "",
             "## 技能与经历",
             "",
@@ -331,44 +453,42 @@ def render_initialization_report(
     lines.extend(
         [
             "",
-            "- 每名成年人和老年人的技能都有学习来源、练习次数和熟练度。",
-            "- 技能分布会显著影响家庭食物路径；当前模型不自动补齐缺失工匠。",
-            "- 生命经历包含出生、成长、职业学习和旧世界财产不转入新世界的记录。",
+            "- 技能有学习来源、练习次数和熟练度。",
+            "- 个人技能不会被自动复制给家庭成员。",
+            "- 探索信息按人物保存；家庭层面只在明确计入沟通时间后形成共享视图。",
             "",
             "## 照护与劳动",
             "",
             f"- 依赖人口：`{summary['dependent_people']}`。",
             f"- 可基础劳动的成年人或老年人：`{summary['active_people']}`。",
             f"- 承担照护责任的人：`{summary['caregiver_people']}`。",
-            "- 试运行按婴儿、幼儿、儿童、行动限制和健康状态扣除劳动时间。",
-            "- 照护者仍保留剩余工作时间，但关键照护者会首先损失外出采集时间。",
+            "- 照护、探索沟通和迁移往返都会扣除家庭可用劳动时间。",
+            "",
+            "## 全部审计阻断项与证据",
+            "",
+            "| 阻断项 | 证据位置 | 说明 |",
+            "| --- | --- | --- |",
+        ]
+    )
+    for finding in all_blockers:
+        lines.append(
+            f"| `{finding['code']}` | `{finding['path']}` | "
+            f"{finding['message']} |"
+        )
+    lines.extend(
+        [
             "",
             "## 与环境的相容性",
             "",
-            "| 核验项 | 结果 |",
-            "| --- | --- |",
-            "| 饮水路径 | 通过 |",
-            "| 初始数日食物 | 通过 |",
-            "| 最初数周食物 | 失败 |",
-            "| 季节转换 | 失败 |",
-            "| 完整年度 | 失败 |",
-            "| 遮蔽 | 在第一个完整季节内达到可行覆盖，但首三日覆盖偏低 |",
-            "| 火 | 冷季覆盖不足 |",
-            "| 工具 | 多数家庭达到可用阈值，但少数家庭持续落后 |",
-            "",
-            "## 生态冲突",
-            "",
-            "1. 4000 人对局部野生资源的消耗速度快于家庭独立探索、加工和迁移的恢复速度。",
-            "2. 当前技能分布使高热量秋季资源集中在部分家庭，未定义分享或交换时会产生"
-            "结构性饥荒。",
-            "3. 50 平方公里内的自然再生量可能支持长期生存，但家庭级分配、储存和协作缺失"
-            "使总量不可转化为稳定供给。",
-            "4. 不能通过运行时补给、自动共享或提高所有人技能来消除这些冲突。",
+            "- 饮水、食物、遮蔽、火和工具的专项路径结果见"
+            " `OPENING_SURVIVAL_REVIEW.md`。",
+            "- 资源账目和非负检查见 `ENVIRONMENT_RESOURCE_INVENTORY.md`。",
+            "- 在动态身体后果和家庭分配需求补齐前，不通过初始化与生态相容性验收。",
             "",
             "## 结论",
             "",
-            "人口内部初始化一致性通过；人口与环境的最初数日条件相容，但月和年度生存"
-            "不通过。完整模拟必须等待人物决策、交换、信任和劳动交换需求补齐并重新核验。",
+            "内部引用一致，但整体仍被生存、资源账或行为缺口阻断。"
+            "当前结果只能作为固定人口压力测试和需求诊断，不能启动正式长期模拟。",
         ]
     )
     return "\n".join(lines).rstrip() + "\n"

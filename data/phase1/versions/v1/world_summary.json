@@ -1,0 +1,216 @@
+{
+  "cultivable_cells": 4214,
+  "drop_point": {
+    "distance_to_water_km": 0.5,
+    "elevation_m": 64.15,
+    "x": 50,
+    "y": 33
+  },
+  "fingerprint": "ae9924695f71d1ad1aaea171183526ae6ae962d35aa28e946d5cd16cb242ddf7",
+  "habitable_cells": 4123,
+  "habitat_counts": {
+    "floodplain": 234,
+    "forest_edge": 695,
+    "meadow": 2437,
+    "upland": 28,
+    "water": 354,
+    "wetland": 289,
+    "woodland": 963
+  },
+  "materials": {
+    "clay": {
+      "capacity_kg": 28157.526,
+      "cells": 234,
+      "evidence": [
+        "MODEL-MAT-004"
+      ],
+      "renewal_fraction_per_year": 0.01,
+      "stock_kg_at_start": 25149.732
+    },
+    "fiber": {
+      "capacity_kg": 273076.908,
+      "cells": 3421,
+      "evidence": [
+        "MODEL-MAT-003"
+      ],
+      "renewal_fraction_per_year": 0.75,
+      "stock_kg_at_start": 243327.971
+    },
+    "stone": {
+      "capacity_kg": 8067.831,
+      "cells": 28,
+      "evidence": [
+        "MODEL-MAT-001"
+      ],
+      "renewal_fraction_per_year": 0.0,
+      "stock_kg_at_start": 7088.825
+    },
+    "wood": {
+      "capacity_kg": 5022285.535,
+      "cells": 1658,
+      "evidence": [
+        "MODEL-MAT-002"
+      ],
+      "renewal_fraction_per_year": 0.03,
+      "stock_kg_at_start": 4491328.714
+    }
+  },
+  "resources": {
+    "arrowhead": {
+      "annual_recovery_fraction": 0.6,
+      "availability_day_range": [
+        180,
+        310
+      ],
+      "capacity_kg": 34857.034,
+      "cells": 289,
+      "evidence": [
+        "MODEL-ENV-002"
+      ],
+      "kcal_per_kg": 1000.0,
+      "stock_kg_at_start": 24618.876
+    },
+    "cattail": {
+      "annual_recovery_fraction": 0.68,
+      "availability_day_range": [
+        120,
+        330
+      ],
+      "capacity_kg": 43533.416,
+      "cells": 289,
+      "evidence": [
+        "MODEL-ENV-001"
+      ],
+      "kcal_per_kg": 900.0,
+      "stock_kg_at_start": 24832.554
+    },
+    "deer": {
+      "annual_recovery_fraction": 0.35,
+      "availability_day_range": [
+        1,
+        365
+      ],
+      "capacity_kg": 131999.136,
+      "cells": 1658,
+      "evidence": [
+        "MODEL-ENV-010"
+      ],
+      "kcal_per_kg": 1600.0,
+      "stock_kg_at_start": 57669.692
+    },
+    "fish": {
+      "annual_recovery_fraction": 0.55,
+      "availability_day_range": [
+        1,
+        365
+      ],
+      "capacity_kg": 141313.111,
+      "cells": 354,
+      "evidence": [
+        "MODEL-ENV-007"
+      ],
+      "kcal_per_kg": 1200.0,
+      "stock_kg_at_start": 61738.916
+    },
+    "hare": {
+      "annual_recovery_fraction": 0.6,
+      "availability_day_range": [
+        1,
+        365
+      ],
+      "capacity_kg": 62766.652,
+      "cells": 3132,
+      "evidence": [
+        "MODEL-ENV-009"
+      ],
+      "kcal_per_kg": 1400.0,
+      "stock_kg_at_start": 27422.403
+    },
+    "hazelnut": {
+      "annual_recovery_fraction": 0.65,
+      "availability_day_range": [
+        225,
+        295
+      ],
+      "capacity_kg": 133816.166,
+      "cells": 1658,
+      "evidence": [
+        "MODEL-ENV-004"
+      ],
+      "kcal_per_kg": 6300.0,
+      "stock_kg_at_start": 123914.154
+    },
+    "mixed_berries": {
+      "annual_recovery_fraction": 0.72,
+      "availability_day_range": [
+        170,
+        260
+      ],
+      "capacity_kg": 187210.093,
+      "cells": 3132,
+      "evidence": [
+        "MODEL-ENV-003"
+      ],
+      "kcal_per_kg": 500.0,
+      "stock_kg_at_start": 28081.514
+    },
+    "oak_acorn": {
+      "annual_recovery_fraction": 0.52,
+      "availability_day_range": [
+        260,
+        335
+      ],
+      "capacity_kg": 475992.566,
+      "cells": 963,
+      "evidence": [
+        "MODEL-ENV-005"
+      ],
+      "kcal_per_kg": 3870.0,
+      "stock_kg_at_start": 92295.316
+    },
+    "spring_greens": {
+      "annual_recovery_fraction": 0.8,
+      "availability_day_range": [
+        60,
+        190
+      ],
+      "capacity_kg": 134590.728,
+      "cells": 0,
+      "evidence": [
+        "MODEL-ENV-006"
+      ],
+      "kcal_per_kg": 300.0,
+      "stock_kg_at_start": 0.0
+    },
+    "waterfowl": {
+      "annual_recovery_fraction": 0.42,
+      "availability_day_range": [
+        90,
+        310
+      ],
+      "capacity_kg": 29359.487,
+      "cells": 643,
+      "evidence": [
+        "MODEL-ENV-008"
+      ],
+      "kcal_per_kg": 1800.0,
+      "stock_kg_at_start": 6971.325
+    }
+  },
+  "seed": 4000,
+  "start_day_of_year": 260,
+  "status_provenance": {
+    "climate": "assumption",
+    "hydrology": "assumption",
+    "land": "assumption",
+    "materials": "assumption",
+    "resources": "assumption"
+  },
+  "water": {
+    "groundwater_m3": 900000.0,
+    "quality": 0.94,
+    "surface_capacity_m3": 16491422.726,
+    "surface_volume_m3": 12863309.726
+  },
+  "world_id": "temperate-floodplain-50km2"
+}

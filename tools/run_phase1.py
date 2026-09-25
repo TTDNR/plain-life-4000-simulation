@@ -19,6 +19,11 @@ def parse_args() -> argparse.Namespace:
         description="Generate and validate the Phase 1 environment and population."
     )
     parser.add_argument(
+        "--version",
+        default="v2",
+        help="Version directory under data/phase1/versions.",
+    )
+    parser.add_argument(
         "--days",
         type=int,
         default=365,
@@ -34,8 +39,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    result = run_phase1(ROOT, days=args.days)
-    written = write_phase1_artifacts(ROOT, result)
+    result = run_phase1(ROOT, days=args.days, version=args.version)
+    written = write_phase1_artifacts(ROOT, result, version=args.version)
     print(f"gate_status={result.audit['gate_status']}")
     print(f"blockers={result.audit['summary']['blockers']}")
     print(f"warnings={result.audit['summary']['warnings']}")

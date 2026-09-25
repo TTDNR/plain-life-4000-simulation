@@ -1,0 +1,237 @@
+{
+  "schema_version": 1,
+  "target_population": 4000,
+  "test_contract": {
+    "test_kind": "fixed_population_demand_pressure_test",
+    "body_consequences": {
+      "status": "unresolved",
+      "value": null,
+      "required": "dynamic weight, capacity, labor, illness, and mortality feedback"
+    },
+    "household_food_allocation": {
+      "status": "unresolved",
+      "value": null,
+      "required": "differential, refusable, conflict-capable family allocation"
+    },
+    "interhousehold_exchange": {
+      "status": "unresolved",
+      "value": null,
+      "required": "food, fire, care, and knowledge exchange or refusal rules"
+    },
+    "natural_loss": {
+      "status": "unresolved",
+      "value": null,
+      "required": "mortality, decay, pre-harvest spoilage, and other environmental losses"
+    }
+  },
+  "windows": [
+    {
+      "id": "initial_days",
+      "start_day": 0,
+      "end_day": 3,
+      "focus": "reach drinking water and directly edible or simply processed food without tools or stored food",
+      "status": "unresolved",
+      "bottleneck": null,
+      "feasible_paths": [],
+      "likely_failure": null,
+      "capacity_margin": null,
+      "evidence": []
+    },
+    {
+      "id": "initial_weeks",
+      "start_day": 4,
+      "end_day": 42,
+      "focus": "range expansion and labor-cost change after nearby resources are consumed",
+      "status": "unresolved",
+      "bottleneck": null,
+      "feasible_paths": [],
+      "likely_failure": null,
+      "capacity_margin": null,
+      "evidence": []
+    },
+    {
+      "id": "first_season_transition",
+      "start_day": 43,
+      "end_day": 180,
+      "focus": "food seasonality, shelter, fuel, and storage gaps",
+      "status": "unresolved",
+      "bottleneck": null,
+      "feasible_paths": [],
+      "likely_failure": null,
+      "capacity_margin": null,
+      "evidence": []
+    },
+    {
+      "id": "first_year_plus",
+      "start_day": 181,
+      "end_day": null,
+      "focus": "match sustained extraction to regeneration and identify a long-term survival path",
+      "status": "unresolved",
+      "bottleneck": null,
+      "feasible_paths": [],
+      "likely_failure": null,
+      "capacity_margin": null,
+      "evidence": []
+    }
+  ],
+  "paths": {
+    "water": {
+      "required_problems": [
+        "find water",
+        "reach water",
+        "recognize risk",
+        "drink without a container",
+        "assist a person who cannot self-provision"
+      ],
+      "status": "unresolved",
+      "solution": null,
+      "evidence": []
+    },
+    "food": {
+      "required_problems": [
+        "recognize food",
+        "gather or capture",
+        "transport",
+        "process",
+        "allocate",
+        "bear misidentification and acquisition failure"
+      ],
+      "status": "unresolved",
+      "solution": null,
+      "evidence": []
+    },
+    "shelter": {
+      "required_problems": [
+        "choose a site",
+        "collect material",
+        "build cover",
+        "manage damp and crowding",
+        "manage night risk"
+      ],
+      "status": "unresolved",
+      "solution": null,
+      "evidence": []
+    },
+    "fire": {
+      "required_problems": [
+        "have an operator with practical skill",
+        "find suitable material",
+        "attempt and possibly fail",
+        "maintain embers or fire"
+      ],
+      "status": "unresolved",
+      "solution": null,
+      "evidence": []
+    },
+    "tools": {
+      "required_problems": [
+        "find raw material",
+        "know processing method",
+        "spend labor time",
+        "handle breakage and injury"
+      ],
+      "status": "unresolved",
+      "solution": null,
+      "evidence": []
+    },
+    "stable_supply": {
+      "required_problems": [
+        "store food",
+        "cultivate or manage harvests",
+        "improve tools",
+        "cooperate",
+        "recover from short-term shocks"
+      ],
+      "status": "unresolved",
+      "solution": null,
+      "evidence": []
+    }
+  },
+  "food_audit": {
+    "dimensions": {
+      "mature": {
+        "status": "unresolved",
+        "value": null,
+        "evidence": []
+      },
+      "reachable": {
+        "status": "unresolved",
+        "value": null,
+        "evidence": []
+      },
+      "identifiable_and_processable": {
+        "status": "unresolved",
+        "value": null,
+        "evidence": []
+      },
+      "labor_and_energy_cost": {
+        "status": "unresolved",
+        "value": null,
+        "evidence": []
+      },
+      "transport_and_distribution": {
+        "status": "unresolved",
+        "value": null,
+        "evidence": []
+      },
+      "preservation_duration": {
+        "status": "unresolved",
+        "value": null,
+        "evidence": []
+      },
+      "household_capability_differences": {
+        "status": "unresolved",
+        "value": null,
+        "evidence": []
+      },
+      "future_reproduction_impact": {
+        "status": "unresolved",
+        "value": null,
+        "evidence": []
+      }
+    },
+    "total_biomass_is_sufficient_proof": {
+      "status": "known",
+      "value": false,
+      "evidence": ["REQ-4"]
+    },
+    "external_crop_seeds": {
+      "status": "known",
+      "value": "none",
+      "evidence": ["REQ-4"]
+    },
+    "automatic_agriculture": {
+      "status": "known",
+      "value": false,
+      "evidence": ["REQ-4"]
+    },
+    "domestication_shortcut": {
+      "status": "known",
+      "value": "not allowed",
+      "evidence": ["REQ-4"]
+    }
+  },
+  "time_allocation": {
+    "all_people_free_for_collection": {
+      "status": "known",
+      "value": false,
+      "evidence": ["REQ-3"]
+    },
+    "competing_activities": {
+      "status": "known",
+      "value": [
+        "infant and dependent care",
+        "illness",
+        "missing family search",
+        "disagreement",
+        "rest"
+      ],
+      "evidence": ["REQ-3"]
+    },
+    "skill_implies_immediate_success": {
+      "status": "known",
+      "value": false,
+      "evidence": ["REQ-3"]
+    }
+  }
+}

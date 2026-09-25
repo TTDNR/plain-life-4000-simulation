@@ -5,6 +5,9 @@ from .environment import (
     WorldState,
     generate_environment,
     load_environment_baseline,
+    record_material_harvest,
+    record_resource_harvest,
+    resource_ledger_snapshot,
 )
 from .population import PopulationState, generate_population
 
@@ -15,4 +18,7 @@ __all__ = [
     "generate_environment",
     "generate_population",
     "load_environment_baseline",
+    "record_material_harvest",
+    "record_resource_harvest",
+    "resource_ledger_snapshot",
 ]

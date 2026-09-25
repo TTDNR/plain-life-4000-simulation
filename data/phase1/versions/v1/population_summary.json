@@ -1,0 +1,52 @@
+{
+  "active_people": 2941,
+  "actual_total": 4000,
+  "age_bands": {
+    "age_13_17": 250,
+    "age_18_44": 1942,
+    "age_1_4": 230,
+    "age_45_64": 725,
+    "age_5_12": 375,
+    "age_65_plus": 408,
+    "under_1": 70
+  },
+  "caregiver_people": 905,
+  "dependent_people": 675,
+  "fingerprint": "5c27aa772c4d3151db0fcf6eb2890335a2ef084ba898491a46867b134548763e",
+  "household_sizes": {
+    "1": 80,
+    "2": 120,
+    "3": 180,
+    "4": 220,
+    "5": 230,
+    "6": 100,
+    "7": 50,
+    "8": 20
+  },
+  "households": 1000,
+  "infants": 70,
+  "infants_with_caregiver": 70,
+  "kinship_edges": 2093,
+  "lactation_links": 70,
+  "ongoing_pregnancies": 30,
+  "pregnancy_events": 100,
+  "skill_counts": {
+    "acorn_processing": 1325,
+    "basic_plant_identification": 2888,
+    "childcare": 2254,
+    "cooking": 2392,
+    "fiber_cordage": 999,
+    "fire_friction": 284,
+    "fire_keeping": 559,
+    "fishing": 989,
+    "hunting_or_trapping": 684,
+    "shelter_building": 1163,
+    "stone_tool_making": 590,
+    "tree_food_knowledge": 1740,
+    "water_finding": 2570,
+    "water_safety": 1479,
+    "wetland_plant_knowledge": 1737,
+    "wood_working": 911
+  },
+  "target_total": 4000
+}

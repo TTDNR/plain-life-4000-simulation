@@ -2,8 +2,8 @@
 
 用于模拟 4000 个人类单位在平原环境中生活的独立项目。
 
-当前状态：Phase 1 固定世界、4000 人初始人口和专项生存核验已经可复算。
-最初数日存在生存路径，但年度核验失败，尚未批准启动长期模拟。
+当前状态：v1 秋季温带结果已冻结；v2 暖湿早季修正版的门禁为 `BLOCKED`。
+v2 是固定人口需求压力测试，不是动态生存测试，尚未批准启动长期模拟。
 
 ## 项目目标
 
@@ -32,6 +32,7 @@
 - [环境资源清单](docs/phase1/ENVIRONMENT_RESOURCE_INVENTORY.md)
 - [开局生存核验](docs/phase1/OPENING_SURVIVAL_REVIEW.md)
 - [初始化一致性检查](docs/phase1/INITIALIZATION_CONSISTENCY_REVIEW.md)
+- [版本索引](docs/phase1/versions/README.md)
 - [技术决策记录](docs/TECHNOLOGY_DECISIONS.md)
 - [Git 工作流](docs/GIT_WORKFLOW.md)
 - [项目规则](AGENTS.md)
@@ -40,8 +41,8 @@
 
 ```powershell
 py -3.12 -m unittest discover -s tests -v
-py -3.12 tools\run_phase1.py --days 365
+py -3.12 tools\run_phase1.py --version v2 --days 365
 ```
 
-第二条命令运行完整年度专项核验并生成三项报告。门禁未通过时返回非零退出码。
+第二条命令运行 v2 完整年度压力测试并生成三项报告。门禁未通过时返回非零退出码。
 `--allow-failed` 只用于保留失败报告，不能作为正式世界历史或长期模拟许可。

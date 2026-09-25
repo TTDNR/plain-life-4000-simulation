@@ -36,9 +36,11 @@ class Phase1Result:
 def run_phase1(
     root: Path,
     days: int = 365,
+    version: str = "v2",
 ) -> Phase1Result:
+    version_dir = root / "data" / "phase1" / "versions" / version
     baseline = load_environment_baseline(
-        root / "data" / "phase1" / "environment_baseline.json"
+        version_dir / "environment_baseline.json"
     )
     world = generate_environment(baseline)
     population = generate_population(
@@ -46,19 +48,24 @@ def run_phase1(
         target_total=4000,
     )
     survival = run_survival_validation(world, population, days=days)
-    audit_data = _build_audit_contracts(root, baseline, world, population, survival)
+    audit_data = _build_audit_contracts(
+        version_dir, baseline, world, population, survival
+    )
     audit_module = _load_audit_module(root)
     audit = audit_module.build_audit(
         audit_data["world"],
         audit_data["survival"],
         audit_data["population"],
     )
+    _apply_runtime_audit_requirements(audit, survival)
     findings = audit["findings"]
     reports = {
-        "environment": render_environment_report(world, population, survival),
-        "survival": render_survival_report(survival),
+        "environment": render_environment_report(
+            world, population, survival, version
+        ),
+        "survival": render_survival_report(survival, version),
         "initialization": render_initialization_report(
-            population, survival, findings
+            population, survival, findings, version, audit["gate_status"]
         ),
     }
     return Phase1Result(
@@ -73,24 +80,27 @@ def run_phase1(
 def write_phase1_artifacts(
     root: Path,
     result: Phase1Result,
+    version: str = "v2",
 ) -> dict[str, Path]:
-    artifacts_dir = root / "artifacts" / "phase1"
-    docs_dir = root / "docs" / "phase1"
+    artifacts_dir = root / "artifacts" / "phase1" / "versions" / version
+    docs_dir = root / "docs" / "phase1" / "versions" / version
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     docs_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, Path] = {}
 
     world_summary = environment_summary(result.world)
     written["world_summary"] = _write_json(
-        artifacts_dir / "world_summary.json", world_summary
+        artifacts_dir / "world_summary.json",
+        {"version": version, **world_summary},
     )
     written["population_summary"] = _write_json(
         artifacts_dir / "population_summary.json",
-        result.population.summary(),
+        {"version": version, **result.population.summary()},
     )
     written["survival_run"] = _write_json(
         artifacts_dir / "survival_run.json",
         {
+            "version": version,
             **result.survival.summary(),
             "daily_metrics": [
                 asdict(metric) for metric in result.survival.metrics
@@ -120,15 +130,15 @@ def write_phase1_artifacts(
 
 
 def _build_audit_contracts(
-    root: Path,
+    version_dir: Path,
     baseline: EnvironmentBaseline,
     world: WorldState,
     population: PopulationState,
     survival: SurvivalRunResult,
 ) -> dict[str, dict[str, Any]]:
-    world_contract = _load_json(root / "data" / "phase1" / "world.json")
-    survival_contract = _load_json(root / "data" / "phase1" / "survival.json")
-    population_contract = _load_json(root / "data" / "phase1" / "population.json")
+    world_contract = _load_json(version_dir / "world.json")
+    survival_contract = _load_json(version_dir / "survival.json")
+    population_contract = _load_json(version_dir / "population.json")
     environment = environment_summary(world)
 
     for field in ("state_fingerprint", "generation_seed"):
@@ -184,6 +194,13 @@ def _build_audit_contracts(
         },
         "evidence": ["SIM-YEAR-001"],
     }
+    survival_contract["test_kind"] = survival.test_kind
+    survival_contract["resource_ledger"] = survival.resource_ledger
+    survival_contract["harvest_details"] = survival.harvest_details
+    survival_contract["acquisition_paths"] = survival.acquisition_paths
+    survival_contract["distribution_diagnostics"] = (
+        survival.distribution_diagnostics
+    )
 
     population_contract["snapshot"] = population.to_snapshot_dict()
     population_contract["ecology_link"] = {
@@ -257,6 +274,107 @@ def _component_value(
 
 def result_string(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+
+
+def _apply_runtime_audit_requirements(
+    audit: dict[str, Any],
+    survival: SurvivalRunResult,
+) -> None:
+    findings = audit["findings"]
+    for resource_id, ledger in survival.resource_ledger.items():
+        if abs(ledger["closure_error_kg"]) > 0.001:
+            findings.append(
+                {
+                    "section": "environment",
+                    "severity": "blocker",
+                    "code": "resource_ledger_not_closed",
+                    "path": f"resource_ledger.{resource_id}",
+                    "message": (
+                        f"Closing error is {ledger['closure_error_kg']} kg."
+                    ),
+                }
+            )
+        if not ledger["non_negative"]:
+            findings.append(
+                {
+                    "section": "environment",
+                    "severity": "blocker",
+                    "code": "negative_resource_stock",
+                    "path": f"resource_ledger.{resource_id}",
+                    "message": "Resource stock became negative.",
+                }
+            )
+    findings.append(
+        {
+            "section": "environment",
+            "severity": "blocker",
+            "code": "natural_loss_model_missing",
+            "path": "resource_ledger.*.natural_loss_kg",
+            "message": (
+                "Natural mortality, decay, pre-harvest spoilage, and other "
+                "environmental losses are not yet modeled; zero is a declared gap."
+            ),
+        }
+    )
+    if survival.test_kind == "fixed_population_demand_pressure_test":
+        findings.append(
+            {
+                "section": "initialization",
+                "severity": "blocker",
+                "code": "dynamic_body_consequences_missing",
+                "path": "survival.test_kind",
+                "message": (
+                    "The annual result is a fixed-demand pressure test and "
+                    "does not update body condition, labor, or mortality."
+                ),
+            }
+        )
+    findings.extend(
+        [
+            {
+                "section": "initialization",
+                "severity": "blocker",
+                "code": "household_food_allocation_rules_missing",
+                "path": "population.behavior_gaps.household_food_allocation",
+                "message": (
+                    "Family members currently share a household food pool; "
+                    "differential, refusable, and conflicting allocation is not implemented."
+                ),
+            },
+            {
+                "section": "initialization",
+                "severity": "blocker",
+                "code": "interhousehold_exchange_rules_missing",
+                "path": "population.behavior_gaps.interhousehold_exchange",
+                "message": (
+                    "Food, fire, care, and knowledge exchange between households "
+                    "is not a formal behavior; only diagnostic comparisons exist."
+                ),
+            },
+        ]
+    )
+    if not survival.acquisition_paths["food"]:
+        findings.append(
+            {
+                "section": "initialization",
+                "severity": "blocker",
+                "code": "food_processing_path_missing",
+                "path": "survival.acquisition_paths.food",
+                "message": "No food processing path was recorded.",
+            }
+        )
+    audit["summary"]["blockers"] = sum(
+        item["severity"] == "blocker" for item in findings
+    )
+    audit["summary"]["warnings"] = sum(
+        item["severity"] == "warning" for item in findings
+    )
+    if audit["summary"]["blockers"]:
+        audit["gate_status"] = "BLOCKED"
+    elif audit["summary"]["warnings"]:
+        audit["gate_status"] = "CONDITIONAL"
+    else:
+        audit["gate_status"] = "PASS"
 
 
 def _load_audit_module(root: Path) -> Any:

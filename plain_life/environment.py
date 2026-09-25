@@ -105,6 +105,7 @@ class WorldState:
     groundwater_volume_m3: float
     water_quality: float
     initial_fingerprint: str
+    resource_ledger: dict[str, dict[str, float]]
     elapsed_days: int = 0
     spill_output_m3: float = 0.0
 
@@ -205,6 +206,15 @@ class WorldState:
                 round(self.groundwater_volume_m3, 5),
                 round(self.water_quality, 5),
             ],
+            "ledger": {
+                resource_id: {
+                    key: round(value, 5)
+                    for key, value in ledger.items()
+                }
+                for resource_id, ledger in sorted(
+                    self.resource_ledger.items()
+                )
+            },
         }
         encoded = json.dumps(
             payload, sort_keys=True, separators=(",", ":")
@@ -393,6 +403,20 @@ def generate_environment(baseline: EnvironmentBaseline) -> WorldState:
             baseline.raw["hydrology"]["base_water_quality"]
         ),
         initial_fingerprint="",
+        resource_ledger={
+            resource_id: {
+                "opening_stock_kg": round(sum(stock), 6),
+                "additions_kg": 0.0,
+                "harvested_kg": 0.0,
+                "natural_loss_kg": 0.0,
+                "internal_transfer_kg": 0.0,
+            }
+            for resource_id, stock in {
+                **plant_stock,
+                **animal_stock,
+                **material_stock,
+            }.items()
+        },
     )
     state.initial_fingerprint = state.fingerprint()
     return state
@@ -438,16 +462,26 @@ def advance_day(state: WorldState) -> dict[str, float]:
             annual_fraction = float(spec["annual_recovery_fraction"])
             if day == int(season_start):
                 for index, cap in enumerate(capacity):
+                    before = stock[index]
                     stock[index] = min(
-                        cap, stock[index] + cap * annual_fraction * condition[index]
+                        cap,
+                        before + cap * annual_fraction * condition[index],
                     )
+                    state.resource_ledger[resource_id][
+                        "additions_kg"
+                    ] += max(0.0, stock[index] - before)
             outside = not (int(season_start) <= day <= int(season_end))
             if outside:
                 daily_growth = annual_fraction / 365.0 * 0.35
                 for index, cap in enumerate(capacity):
+                    before = stock[index]
                     stock[index] = min(
-                        cap, stock[index] + cap * daily_growth * condition[index]
+                        cap,
+                        before + cap * daily_growth * condition[index],
                     )
+                    state.resource_ledger[resource_id][
+                        "additions_kg"
+                    ] += max(0.0, stock[index] - before)
             for index in range(len(condition)):
                 condition[index] = min(1.0, condition[index] + 0.0015)
         else:
@@ -457,11 +491,12 @@ def advance_day(state: WorldState) -> dict[str, float]:
             for index, cap in enumerate(capacity):
                 if cap <= 0.0:
                     continue
-                current = stock[index]
-                if current <= 0.0:
-                    current = min(cap, cap * 0.01)
+                current = max(0.0, stock[index])
                 stock[index] = min(
                     cap, current + growth * current * (1.0 - current / cap)
+                )
+                state.resource_ledger[resource_id]["additions_kg"] += max(
+                    0.0, stock[index] - current
                 )
 
     if day == 1:
@@ -470,10 +505,77 @@ def advance_day(state: WorldState) -> dict[str, float]:
             stock = state.material_stock_kg[material_id]
             renewal = float(spec["renewal_fraction_per_year"])
             for index, cap in enumerate(capacity):
-                stock[index] = min(
-                    cap, stock[index] + cap * renewal
+                before = stock[index]
+                stock[index] = min(cap, before + cap * renewal)
+                state.resource_ledger[material_id]["additions_kg"] += max(
+                    0.0, stock[index] - before
                 )
     return weather
+
+
+def record_resource_harvest(
+    state: WorldState,
+    resource_id: str,
+    stock_kg: float,
+) -> None:
+    if stock_kg < 0.0:
+        raise ValueError("resource harvest cannot be negative")
+    state.resource_ledger[resource_id]["harvested_kg"] += stock_kg
+
+
+def record_material_harvest(
+    state: WorldState,
+    material_id: str,
+    stock_kg: float,
+) -> None:
+    if stock_kg < 0.0:
+        raise ValueError("material harvest cannot be negative")
+    state.resource_ledger[material_id]["harvested_kg"] += stock_kg
+
+
+def resource_ledger_snapshot(state: WorldState) -> dict[str, dict[str, float]]:
+    snapshot: dict[str, dict[str, float]] = {}
+    for resource_id, ledger in state.resource_ledger.items():
+        stock = (
+            state.plant_stock_kg[resource_id]
+            if resource_id in state.plant_stock_kg
+            else state.animal_stock_kg[resource_id]
+            if resource_id in state.animal_stock_kg
+            else state.material_stock_kg[resource_id]
+        )
+        closing = sum(stock)
+        closure_error = (
+            ledger["opening_stock_kg"]
+            + ledger["additions_kg"]
+            - ledger["harvested_kg"]
+            - ledger["natural_loss_kg"]
+            - ledger["internal_transfer_kg"]
+            - closing
+        )
+        spec = (
+            state.resource_spec(resource_id)
+            if resource_id in state.baseline.resource_specs
+            else state.material_spec(resource_id)
+        )
+        snapshot[resource_id] = {
+            "opening_stock_kg": round(ledger["opening_stock_kg"], 6),
+            "additions_kg": round(ledger["additions_kg"], 6),
+            "harvested_kg": round(ledger["harvested_kg"], 6),
+            "natural_loss_kg": round(ledger["natural_loss_kg"], 6),
+            "internal_transfer_kg": round(
+                ledger["internal_transfer_kg"], 6
+            ),
+            "closing_stock_kg": round(closing, 6),
+            "closure_error_kg": round(closure_error, 6),
+            "non_negative": all(value >= 0.0 for value in stock),
+            "stock_basis": spec.get(
+                "stock_basis", "legacy_unspecified_kg"
+            ),
+            "edible_yield_fraction": spec.get(
+                "edible_yield_fraction", 1.0
+            ),
+        }
+    return snapshot
 
 
 def weather_for_day(state: WorldState, day_of_year: int) -> dict[str, float]:
@@ -508,6 +610,7 @@ def weather_for_day(state: WorldState, day_of_year: int) -> dict[str, float]:
 
 
 def environment_summary(state: WorldState) -> dict[str, Any]:
+    ledger_snapshot = resource_ledger_snapshot(state)
     habitat_counts = {
         land_class: sum(cell.land_class == land_class for cell in state.cells)
         for land_class in LAND_CLASSES
@@ -525,11 +628,20 @@ def environment_summary(state: WorldState) -> dict[str, Any]:
             ),
             "cells": sum(value > 0.0 for value in values),
             "kcal_per_kg": float(spec["kcal_per_kg"]),
+            "stock_basis": spec.get("stock_basis", "legacy_unspecified_kg"),
+            "edible_yield_fraction": float(
+                spec.get("edible_yield_fraction", 1.0)
+            ),
             "availability_day_range": spec["availability_day_range"],
             "annual_recovery_fraction": float(
                 spec["annual_recovery_fraction"]
             ),
+            "regeneration_model": spec.get(
+                "regeneration_model", spec.get("growth_model")
+            ),
+            "growth_rate_unit": spec.get("growth_rate_unit"),
             "evidence": spec["evidence"],
+            **ledger_snapshot[resource_id],
         }
         for resource_id, spec in state.baseline.resource_specs.items()
         for values in [
@@ -551,6 +663,7 @@ def environment_summary(state: WorldState) -> dict[str, Any]:
                 ]
             ),
             "evidence": state.baseline.material_specs[material_id]["evidence"],
+            **ledger_snapshot[material_id],
         }
         for material_id, values in state.material_stock_kg.items()
     }
@@ -577,6 +690,7 @@ def environment_summary(state: WorldState) -> dict[str, Any]:
             "quality": round(state.water_quality, 4),
         },
         "resources": resource_totals,
+        "resource_ledgers": ledger_snapshot,
         "materials": material_totals,
         "status_provenance": {
             "climate": state.baseline.raw["climate"]["status"],

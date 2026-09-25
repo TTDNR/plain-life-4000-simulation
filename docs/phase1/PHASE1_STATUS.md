@@ -1,50 +1,41 @@
 # Phase 1 状态
 
-## 门禁状态
+## 当前版本
 
-```text
-BLOCKED
-```
+`v2` 修正版，门禁 `BLOCKED`，暂不验收，不启动正式长期模拟。
 
-长期模拟不得启动。当前专项核验确认：最初数日存在可行生存路径，但最初数周以后食物
-获取失败。
+当前审计包含 12 个阻断项：
 
-## 当前审计汇总
+- 四个时间窗全部失败。
+- 食物、遮蔽、火和稳定供给路径失败。
+- 自然损失模型未实现。
+- 年度结果只有固定人口需求压力，没有动态身体后果。
+- 家庭内部差异分配、拒绝和冲突规则未定义。
+- 家庭间交换、信任和拒绝规则未定义。
 
-```text
-Blockers: 6
-Warnings: 0
-Environment: known=9, assumption=32, unresolved=0
-Survival: known=7, assumption=1, unresolved=0
-Population constraints: known=16
-Population snapshot: ready, 4000/4000
-```
+完整机器结果位于版本目录：
 
-阻断来自：
+- [版本索引](versions/README.md)
+- [v2 环境资源清单](versions/v2/ENVIRONMENT_RESOURCE_INVENTORY.md)
+- [v2 开局生存核验](versions/v2/OPENING_SURVIVAL_REVIEW.md)
+- [v2 初始化一致性检查](versions/v2/INITIALIZATION_CONSISTENCY_REVIEW.md)
+- [v2 变更记录](versions/v2/CHANGES.md)
 
-- 最初数周、第一个季节转换和第一个完整年度食物核验失败。
-- 食物、遮蔽和稳定供给三条路径未通过。
+## v1 保留
 
-当前没有结构警告。环境参数全部以已接受的模型假设运行；实证校准仍待后续需求。
-
-## 三项交接结果
-
-1. [环境资源清单](ENVIRONMENT_RESOURCE_INVENTORY.md)：区分已确定、假设和待补事实。
-2. [开局生存核验](OPENING_SURVIVAL_REVIEW.md)：列出四时间窗、依赖链和当前瓶颈。
-3. [初始化一致性检查](INITIALIZATION_CONSISTENCY_REVIEW.md)：列出 4000 人和家庭引用约束。
+v1 的秋季温带基线和失败结果未被覆盖，存放于
+[v1 版本目录](versions/v1/PHASE1_STATUS.md)。其未经证明的长期供给判断已在
+[v1 勘误](versions/v1/ERRATA.md) 中撤销。
 
 ## 复现
 
 ```powershell
-py -3.12 -m compileall -q tools tests
 py -3.12 -m unittest discover -s tests -v
-py -3.12 tools\run_phase1.py --days 365 --allow-failed
+py -3.12 tools\run_phase1.py --version v2 --days 365 --allow-failed
 ```
 
-用于长期模拟门禁的命令不得加 `--allow-failed`：
+正式门禁命令不得添加 `--allow-failed`：
 
 ```powershell
-py -3.12 tools\run_phase1.py --days 365
+py -3.12 tools\run_phase1.py --version v2 --days 365
 ```
-
-在门禁非 `PASS` 时，该命令返回非零退出码。

@@ -1,0 +1,66 @@
+{
+  "findings": [
+    {
+      "code": "window_failed",
+      "message": "The evaluated time window did not pass its survival checks.",
+      "path": "survival.windows.initial_weeks.status",
+      "section": "survival",
+      "severity": "blocker"
+    },
+    {
+      "code": "window_failed",
+      "message": "The evaluated time window did not pass its survival checks.",
+      "path": "survival.windows.first_season_transition.status",
+      "section": "survival",
+      "severity": "blocker"
+    },
+    {
+      "code": "window_failed",
+      "message": "The evaluated time window did not pass its survival checks.",
+      "path": "survival.windows.first_year_plus.status",
+      "section": "survival",
+      "severity": "blocker"
+    },
+    {
+      "code": "path_failed",
+      "message": "The evaluated survival path did not pass against the environment.",
+      "path": "survival.paths.food.status",
+      "section": "survival",
+      "severity": "blocker"
+    },
+    {
+      "code": "path_failed",
+      "message": "The evaluated survival path did not pass against the environment.",
+      "path": "survival.paths.shelter.status",
+      "section": "survival",
+      "severity": "blocker"
+    },
+    {
+      "code": "path_failed",
+      "message": "The evaluated survival path did not pass against the environment.",
+      "path": "survival.paths.stable_supply.status",
+      "section": "survival",
+      "severity": "blocker"
+    }
+  ],
+  "gate_status": "BLOCKED",
+  "summary": {
+    "blockers": 6,
+    "environment_status_counts": {
+      "assumption": 32,
+      "known": 9,
+      "unresolved": 0
+    },
+    "population_status_counts": {
+      "assumption": 0,
+      "known": 16,
+      "unresolved": 0
+    },
+    "survival_status_counts": {
+      "assumption": 1,
+      "known": 7,
+      "unresolved": 0
+    },
+    "warnings": 0
+  }
+}

@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "world_id": "plain-life-4000-baseline",
+  "area_km2": 50.0,
+  "initialization": {
+    "environment_materialized_before_people": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-1"]
+    },
+    "agent_demand_generation_allowed": {
+      "status": "known",
+      "value": false,
+      "evidence": ["REQ-1"]
+    },
+    "state_fingerprint": {
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "generation_seed": {
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    }
+  },
+  "boundary": {
+    "edge_rule": {
+      "status": "known",
+      "value": "stable, consistent for every traveler, non-damaging, no navigation hints",
+      "evidence": ["REQ-2"]
+    },
+    "weather_driver": {
+      "status": "assumption",
+      "value": "local long-term climate is imposed at the fixed location",
+      "rationale": "REQ-2 offers this as the default abstraction before long simulation.",
+      "accepted": false
+    },
+    "rainfall": {
+      "status": "known",
+      "value": "explicit environmental input over time",
+      "evidence": ["REQ-2"]
+    },
+    "evaporation": {
+      "status": "known",
+      "value": "explicit environmental output",
+      "evidence": ["REQ-2"]
+    },
+    "surface_water_outflow": {
+      "status": "assumption",
+      "value": "output-only if enabled; no material, organism, seed, or information return flux",
+      "rationale": "REQ-2 permits output-only drainage while forbidding hidden external supply.",
+      "accepted": false
+    },
+    "groundwater_outflow": {
+      "status": "assumption",
+      "value": "output-only if enabled; no hidden recharge from outside",
+      "rationale": "REQ-2 requires a closed or explicitly one-way hydrologic boundary.",
+      "accepted": false
+    },
+    "external_biota": {
+      "status": "known",
+      "value": "none",
+      "evidence": ["REQ-2"]
+    },
+    "external_nonliving_material": {
+      "status": "known",
+      "value": "none except declared weather and energy inputs",
+      "evidence": ["REQ-2"]
+    }
+  },
+  "components": {
+    "terrain.slope": {
+      "category": "terrain",
+      "required_content": "spatial slope distribution and its effect on movement and drainage",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "terrain.depressions": {
+      "category": "terrain",
+      "required_content": "location, depth, catchment, and seasonal water retention of low areas",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "terrain.flood_zones": {
+      "category": "terrain",
+      "required_content": "flood extent by weather condition and expected frequency",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "terrain.habitable_land": {
+      "category": "terrain",
+      "required_content": "land viable for shelter and residence under seasonal conditions",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "terrain.cultivable_land": {
+      "category": "terrain",
+      "required_content": "land viable for cultivation before land improvements",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "freshwater.seasonal_volume": {
+      "category": "freshwater",
+      "required_content": "stored and accessible water volume by season",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "freshwater.quality": {
+      "category": "freshwater",
+      "required_content": "baseline quality and observable or hidden hazards",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "freshwater.access_difficulty": {
+      "category": "freshwater",
+      "required_content": "distance, terrain cost, container needs, and assisted access",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "freshwater.contamination_paths": {
+      "category": "freshwater",
+      "required_content": "transport, dilution, persistence, and exposure pathways",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "plants.edible_parts": {
+      "category": "plants",
+      "required_content": "species and parts edible directly or after processing",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "plants.maturity_season": {
+      "category": "plants",
+      "required_content": "harvest windows, overlap, and seasonal gaps",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "plants.toxicity": {
+      "category": "plants",
+      "required_content": "toxic species, mimic risks, affected parts, and processing limits",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "plants.harvest_difficulty": {
+      "category": "plants",
+      "required_content": "recognition, reach, tool, labor, and handling costs",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "plants.regeneration": {
+      "category": "plants",
+      "required_content": "growth rate and damage thresholds by harvested part and condition",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "plants.reproduction": {
+      "category": "plants",
+      "required_content": "seed, vegetative, or other reproduction and establishment constraints",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "animals.habitat": {
+      "category": "animals",
+      "required_content": "species ranges, cover, water, and seasonal movement",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "animals.food_sources": {
+      "category": "animals",
+      "required_content": "forage or prey dependencies and competition with people",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "animals.reproduction": {
+      "category": "animals",
+      "required_content": "breeding, juvenile survival, and recovery conditions",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "animals.capture_difficulty": {
+      "category": "animals",
+      "required_content": "detection, approach, traps or weapons, handling, and injury risk",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "animals.harvest_response": {
+      "category": "animals",
+      "required_content": "population response to capture, displacement, and habitat pressure",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "materials.stone": {
+      "category": "materials",
+      "required_content": "distribution, form, quantity, and suitability by use",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "materials.wood": {
+      "category": "materials",
+      "required_content": "source species, form, quantity, regrowth, and collection cost",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "materials.fiber": {
+      "category": "materials",
+      "required_content": "source plants or animals, processing, quantity, and durability",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "materials.clay": {
+      "category": "materials",
+      "required_content": "distribution, workability, firing suitability, and extraction cost",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "materials.processing_conditions": {
+      "category": "materials",
+      "required_content": "required tools, fuel, time, skill, and site conditions",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "land.fertility": {
+      "category": "land",
+      "required_content": "baseline nutrient and cultivation suitability by land unit",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "land.drainage": {
+      "category": "land",
+      "required_content": "drainage state and seasonal waterlogging",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "land.clearing_cost": {
+      "category": "land",
+      "required_content": "labor, tools, fire, disposal, and injury cost",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    },
+    "land.continuous_use_change": {
+      "category": "land",
+      "required_content": "yield, nutrients, erosion, salinity, and recovery under repeated use",
+      "status": "unresolved",
+      "value": null,
+      "evidence": []
+    }
+  }
+}
