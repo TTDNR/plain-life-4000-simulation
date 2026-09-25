@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,12 @@ def run_seven_day_integration(
         )
     return {
         "version": version,
+        "run_id": hashlib.sha256(
+            (
+                f"{version}:{world.initial_fingerprint}:"
+                f"{population.fingerprint}:seven-day-dynamic"
+            ).encode("ascii")
+        ).hexdigest()[:16],
         "diagnostic_type": "seven_day_integrated_opening_diagnostic",
         "formal_history": False,
         "long_term_conclusion_allowed": False,
@@ -143,11 +150,13 @@ def run_seven_day_integration(
         ),
         "water_diagnosis": _water_diagnosis(run.household_daily_records),
         "body_fixed_control": {
-            "mode": "fixed_initial_work_capacity_control",
+            "mode": "frozen_individual_initial_capacity_control",
             "initial_dynamic_mean_capacity": round(
                 initial_dynamic_capacity, 4
             ),
-            "initial_fixed_mean_capacity": 1.0,
+            "initial_fixed_mean_capacity": round(
+                initial_dynamic_capacity, 4
+            ),
             "same_initial_world": True,
             "same_initial_population": True,
             "same_social_rules": True,
@@ -181,6 +190,8 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
         f"# {result['version']} 七天开局整合诊断",
         "",
         "这是 4000 人世界副本上的连续 7 天诊断，不是正式历史，也不能证明长期生存能力。",
+        "",
+        f"运行标识：`{result['run_id']}`；模式：`dynamic_body_short_integration`。",
         "",
         "## 整合口径",
         "",
@@ -298,16 +309,17 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             "",
             "## 每日食物获取链",
             "",
-            "| 日期 | 已知可获取 kcal | 获取原料 kg | 可食食物 kg | "
-            "日末库存 kcal | 资源切换 | 未成熟/过季 | 无人会做 | 局部耗尽 | "
-            "无时间 | 加工失败 |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| 日期 | 去重已知热点 kcal | 家庭重复累计 kcal | 获取原料 kg | "
+            "可食食物 kg | 日末库存 kcal | 资源切换 | 未成熟/过季检查 | "
+            "无人会做检查 | 局部耗尽检查 | 无时间检查 | 加工失败检查 |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for metric in result["daily_metrics"]:
         obstacles = metric["food_obstacles"]
         lines.append(
             f"| {metric['day']} | {metric['known_available_food_kcal']} | "
+            f"{metric['household_known_food_kcal_sum']} | "
             f"{metric['stock_kg_acquired']} | "
             f"{metric['edible_food_kg_acquired']} | "
             f"{metric['food_store_end_kcal']} | "
@@ -322,7 +334,10 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
         [
             "",
             "- 获取原料和可食食物分开记录；加工失败只减少可食产量，不能伪装成已吃下。",
-            "- 受阻原因按日保存，不能用单一“缺食”解释。",
+            "- `去重已知热点` 按资源格去重，避免同一鱼塘被每个家庭重复计算；"
+            "`家庭重复累计` 仅表示各家庭已知范围之和，不能当作全体供给。",
+            "- 受阻列是备选检查次数，不是独立失败事件，也不能单独用于判断主因；"
+            "实际完成链由个人活动和资源账给出。",
             f"- 资源切换事件："
             f"`{sum(item['food_resource_switches'] for item in result['daily_metrics'])}`；"
             f"迁移家庭："
@@ -489,25 +504,57 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             "",
             "## 社会行为接入状态",
             "",
-            f"总求助需求事件：`{result['social_action_funnel']['total_need_events']}`。",
+            f"涉及至少一种短缺的家庭日："
+            f"`{result['social_action_funnel']['total_need_events']}`；"
+            f"按求助类型累计的需求事件："
+            f"`{result['social_action_funnel']['sum_aid_need_events']}`。"
+            "同一家庭日可能同时缺水、缺食和缺火，因此两个数字口径不同，不要求相等。",
             "",
-            "| 需求 | 发生需求 | 接触机会 | 请求 | 回应 | 接受 | 拒绝 | 执行 |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| 需求 | 发生需求 | 附近候选 | 知道位置 | 找到人 | 可交流 | 请求 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for aid_type in ("water", "food", "fire", "care", "shelter", "teaching"):
         item = result["social_action_funnel"][aid_type]
         lines.append(
             f"| `{aid_type}` | {item['need_events']} | "
-            f"{item['contact_opportunity']} | {item['request_sent']} | "
-            f"{item['response_received']} | {item['accepted']} | "
-            f"{item['rejected']} | {item['executed']} |"
+            f"{item['candidate_households']} | {item['location_known']} | "
+            f"{item['person_found']} | {item['communication_opportunity']} | "
+            f"{item['request_sent']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "| 需求 | 回应 | 接受 | 拒绝 | 执行 | 接受未执行 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for aid_type in ("water", "food", "fire", "care", "shelter", "teaching"):
+        item = result["social_action_funnel"][aid_type]
+        lines.append(
+            f"| `{aid_type}` | {item['response_received']} | "
+            f"{item['accepted']} | {item['rejected']} | "
+            f"{item['executed']} | {item['accepted_not_executed']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "| 需求 | 未继续原因 |",
+            "| --- | --- |",
+        ]
+    )
+    for aid_type in ("water", "food", "fire", "care", "shelter", "teaching"):
+        item = result["social_action_funnel"][aid_type]
+        lines.append(
+            f"| `{aid_type}` | `{item['not_continued_reasons']}` |"
         )
     lines.extend(
         [
             "",
             "- 接触对象只从 1 公里内、最多 6 个可达家庭中选择，不做全地图最优匹配。",
-            "- 未继续的原因汇总保存在机器结果，区分无人可就近求助、无资源、被拒绝和执行失败。",
+            "- 候选不等于认识或已经接触；知道位置、找到人、可以交流和请求分别计数。",
+            "- 未继续的原因汇总保存在机器结果，区分无候选、无位置、找不到人、无交流机会、"
+            "无资源、被拒绝和执行失败。",
             "- 照护请求的接受与次日实际使用分开；整合表不把未来承诺记作已经执行。",
             "- 住所请求为零表示没有家庭同时满足“雨天”和“遮蔽不足”两个触发条件，"
             "不是住所行为未接入。",
@@ -543,7 +590,11 @@ def _seed_social_state(
             for skill in population.people_by_id[person_id].skills:
                 state.receive_knowledge(
                     f"skill.{skill['id']}",
-                    "independent",
+                    (
+                        "can_teach"
+                        if float(skill.get("proficiency", 0.5)) >= 0.7
+                        else "independent"
+                    ),
                     person_id,
                     0,
                     float(skill.get("proficiency", 0.5)),
@@ -728,6 +779,12 @@ def _social_action_funnel(
         item = stats.get(name, {})
         return {
             "need_events": item.get("need_events", 0),
+            "candidate_households": item.get("candidate_households", 0),
+            "location_known": item.get("location_known", 0),
+            "person_found": item.get("person_found", 0),
+            "communication_opportunity": item.get(
+                "communication_opportunity", 0
+            ),
             "contact_opportunity": item.get("contacts_considered", 0),
             "consider_request": item.get("need_events", 0),
             "request_sent": item.get("requests_sent", 0),
@@ -735,12 +792,26 @@ def _social_action_funnel(
             "accepted": item.get("accepted", 0),
             "rejected": item.get("rejected", 0),
             "executed": item.get("executed", 0),
+            "accepted_not_executed": max(
+                0, item.get("accepted", 0) - item.get("executed", 0)
+            ),
             "not_continued_reasons": item.get(
                 "not_continued_reasons", {}
             ),
         }
     return {
         "total_need_events": total_need_events,
+        "sum_aid_need_events": sum(
+            stats.get(name, {}).get("need_events", 0)
+            for name in (
+                "water",
+                "food",
+                "fire",
+                "care",
+                "shelter",
+                "teaching",
+            )
+        ),
         "water": aid_stats("water"),
         "food": aid_stats("food"),
         "fire": aid_stats("fire"),

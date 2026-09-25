@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -332,6 +333,12 @@ def run_behavior_scenarios(
     contrast_cases = _run_contrast_cases(world, population)
     return {
         "version": version,
+        "run_id": hashlib.sha256(
+            (
+                f"{version}:{world.initial_fingerprint}:"
+                f"{population.fingerprint}:behavior-scenarios"
+            ).encode("ascii")
+        ).hexdigest()[:16],
         "scenarios": [result.to_dict() for result in results],
         "contrast_cases": contrast_cases,
         "all_passed": (
@@ -347,6 +354,8 @@ def render_behavior_report(result: dict[str, Any]) -> str:
         "",
         "本报告只验证过程一致性、时间与身体代价、知识来源和可追溯性。"
         "它不是唯一正确结局，也不代表完整人类行为模型。",
+        "",
+        f"运行标识：`{result['run_id']}`；模式：`behavior_short_scenarios`。",
         "",
         f"全部场景检查通过：`{result['all_passed']}`。",
         "",

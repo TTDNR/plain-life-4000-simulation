@@ -65,6 +65,7 @@ class DayMetric:
     surface_water_m3: float
     remaining_wild_food_kcal: float
     known_available_food_kcal: float
+    household_known_food_kcal_sum: float
     stock_kg_acquired: float
     edible_food_kg_acquired: float
     food_store_end_kcal: float
@@ -119,6 +120,7 @@ class HouseholdRuntime:
     last_consumed_kcal: float = 0.0
     last_water_ratio: float = 1.0
     last_labour_hours: float = 0.0
+    last_remaining_hours: float = 0.0
     last_water_method: str = "none"
     last_water_distance_km: float = 0.0
     last_mobile_people: int = 0
@@ -267,7 +269,7 @@ def run_survival_validation(
     camps_after_day_one_selection: set[int] = set()
 
     for day in range(1, days + 1):
-        if behavior_states and apply_body_feedback:
+        if behavior_states:
             _apply_body_constraints(runtimes, behavior_states)
         weather = _advance_day(world)
         _prepare_household_runtimes(
@@ -615,7 +617,8 @@ def _simulate_day(
     knowledge_hours_total = 0.0
     household_food_ratios: list[float] = []
     households_below_080 = 0
-    known_available_food_kcal = 0.0
+    household_known_food_kcal_sum = 0.0
+    distinct_known_food_cells: set[tuple[str, int]] = set()
     daily_harvest_start = len(daily_harvest_details)
     food_obstacles: dict[str, int] = defaultdict(int)
     food_resource_switches = 0
@@ -630,8 +633,11 @@ def _simulate_day(
     for household_id in household_order:
         runtime = runtimes[household_id]
         household_category_hours: dict[str, float] = defaultdict(float)
-        known_available_food_kcal += _known_available_food_kcal(
+        household_known_food_kcal_sum += _known_available_food_kcal(
             world, runtime
+        )
+        distinct_known_food_cells.update(
+            _known_food_cells(world, runtime)
         )
         demand = sum(_daily_kcal_need(person) for person in runtime.members)
         litres = (
@@ -807,6 +813,7 @@ def _simulate_day(
         runtime.last_labour_hours = (
             potential_hours - care_hours_remaining - hours
         )
+        runtime.last_remaining_hours = hours
         if person_daily_records is not None:
             person_daily_records.extend(
                 _build_person_activity_records(
@@ -916,6 +923,10 @@ def _simulate_day(
     )
     household_count = len(runtimes)
     daily_harvest = daily_harvest_details[daily_harvest_start:]
+    distinct_known_food_kcal = sum(
+        _available_stock_kcal(world, resource_id, cell_index)
+        for resource_id, cell_index in distinct_known_food_cells
+    )
     return DayMetric(
         day=day,
         day_of_year=world.day_of_year,
@@ -949,7 +960,10 @@ def _simulate_day(
         migrations=migrations,
         surface_water_m3=round(world.water_volume_m3, 3),
         remaining_wild_food_kcal=round(remaining_wild_food, 3),
-        known_available_food_kcal=round(known_available_food_kcal, 3),
+        known_available_food_kcal=round(distinct_known_food_kcal, 3),
+        household_known_food_kcal_sum=round(
+            household_known_food_kcal_sum, 3
+        ),
         stock_kg_acquired=round(
             sum(float(item["stock_kg_removed"]) for item in daily_harvest),
             6,
@@ -1147,6 +1161,10 @@ def _empty_social_stats() -> dict[str, Any]:
     return {
         aid_type: {
             "need_events": 0,
+            "candidate_households": 0,
+            "location_known": 0,
+            "person_found": 0,
+            "communication_opportunity": 0,
             "contacts_considered": 0,
             "requests_sent": 0,
             "responses_received": 0,
@@ -1208,16 +1226,16 @@ def _run_social_exchange_phase(
                 "no_reachable_contact",
             )
             continue
-        donor = next(
-            (
-                candidate
-                for _, candidate in contacts
-                if _can_help_with(aid_type, candidate, requestor, behavior_states)
-            ),
-            None,
+        stats[aid_type]["candidate_households"] += len(contacts)
+        contact_result = _find_contactable_household(
+            world,
+            requestor,
+            contacts,
+            stats,
+            aid_type,
+            day,
         )
-        stats[aid_type]["contacts_considered"] += len(contacts)
-        if donor is None:
+        if contact_result is None:
             _record_social_reason(
                 records,
                 stats,
@@ -1225,15 +1243,21 @@ def _run_social_exchange_phase(
                 aid_type,
                 requestor,
                 None,
-                "no_contact_with_capacity_or_resource",
+                "no_contactable_household",
             )
             continue
-        distance_km = _distance_km(
-            world, requestor.camp_cell_index, donor.camp_cell_index
-        )
+        donor, distance_km = contact_result
+        stats[aid_type]["contacts_considered"] += 1
         stats[aid_type]["requests_sent"] += 1
         relation_trust = _relationship_trust(stats, requestor, donor)
-        donor_capacity = _help_capacity_score(aid_type, donor, requestor)
+        capacity_available = _can_help_with(
+            aid_type, donor, requestor, behavior_states
+        )
+        donor_capacity = (
+            _help_capacity_score(aid_type, donor, requestor)
+            if capacity_available
+            else 0.0
+        )
         willingness = max(
             0.05,
             min(
@@ -1245,7 +1269,7 @@ def _run_social_exchange_phase(
             world.seed + day * 9973,
             requestor.household_id + ":" + donor.household_id + ":" + aid_type,
         )
-        accepted = response_value < willingness
+        accepted = capacity_available and response_value < willingness
         stats[aid_type]["responses_received"] += 1
         if not accepted:
             stats[aid_type]["rejected"] += 1
@@ -1256,7 +1280,11 @@ def _run_social_exchange_phase(
                 aid_type,
                 requestor,
                 donor,
-                "request_rejected",
+                (
+                    "no_capacity_or_resource"
+                    if not capacity_available
+                    else "request_rejected"
+                ),
                 distance_km=distance_km,
                 willingness=willingness,
             )
@@ -1374,6 +1402,48 @@ def _nearby_contact_households(
     return candidates[:limit]
 
 
+def _find_contactable_household(
+    world: WorldState,
+    requestor: HouseholdRuntime,
+    candidates: list[tuple[float, HouseholdRuntime]],
+    stats: dict[str, Any],
+    aid_type: str,
+    day: int,
+) -> tuple[HouseholdRuntime, float] | None:
+    for distance, candidate in candidates:
+        pair_contacts = (
+            stats.get("contact_counts", {})
+            .get(requestor.household_id, {})
+            .get(candidate.household_id, 0)
+        )
+        same_camp = (
+            requestor.camp_cell_index == candidate.camp_cell_index
+        )
+        location_known = same_camp or pair_contacts > 0
+        if location_known:
+            stats[aid_type]["location_known"] += 1
+        person_found = location_known or _stable_unit(
+            world.seed + day * 241 + int(distance * 1000),
+            requestor.household_id + ":find:" + candidate.household_id,
+        ) < 0.4
+        if person_found:
+            stats[aid_type]["person_found"] += 1
+        communication_chance = min(
+            0.9,
+            0.35
+            + 0.12 * pair_contacts
+            + min(0.3, requestor.last_remaining_hours / 20.0),
+        )
+        has_contact = person_found and _stable_unit(
+            world.seed + day * 701,
+            requestor.household_id + ":talk:" + candidate.household_id,
+        ) < communication_chance
+        if has_contact:
+            stats[aid_type]["communication_opportunity"] += 1
+            return candidate, distance
+    return None
+
+
 def _can_help_with(
     aid_type: str,
     donor: HouseholdRuntime,
@@ -1462,6 +1532,10 @@ def _execute_social_help(
             donor_surplus * 0.25,
             requestor_need,
         )
+        if transfer_kcal <= 0.0:
+            return False, {
+                "failure_reason": "accepted_no_deliverable_surplus"
+            }
         spec = world.resource_spec(resource_id)
         kg = min(
             store[resource_id],
@@ -1558,7 +1632,13 @@ def _teachable_skill(
     behavior_states: dict[str, Any],
 ) -> str | None:
     donor_skills = {
-        skill["id"] for person in donor.members for skill in person.skills
+        skill["id"]
+        for person in donor.members
+        for skill in person.skills
+        if person.id in behavior_states
+        and behavior_states[person.id].knows(
+            f"skill.{skill['id']}", "can_teach"
+        )
     }
     requestor_skills = {
         skill["id"]
@@ -2452,24 +2532,43 @@ def _known_available_food_kcal(
     world: WorldState,
     runtime: HouseholdRuntime,
 ) -> float:
-    total = 0.0
+    return sum(
+        _available_stock_kcal(world, resource_id, cell_index)
+        for resource_id, cell_index in _known_food_cells(world, runtime)
+    )
+
+
+def _known_food_cells(
+    world: WorldState,
+    runtime: HouseholdRuntime,
+) -> set[tuple[str, int]]:
+    cells: set[tuple[str, int]] = set()
     for resource_id, cell_index, _, _ in runtime.supply_options:
         if not world.is_available(resource_id):
             continue
         spec = world.resource_spec(resource_id)
         if not _can_harvest_by_member(spec, runtime):
             continue
-        stock = (
-            world.plant_stock_kg[resource_id][cell_index]
-            if resource_id in world.plant_stock_kg
-            else world.animal_stock_kg[resource_id][cell_index]
-        )
-        total += (
-            stock
-            * float(spec.get("edible_yield_fraction", 1.0))
-            * float(spec["kcal_per_kg"])
-        )
-    return total
+        cells.add((resource_id, cell_index))
+    return cells
+
+
+def _available_stock_kcal(
+    world: WorldState,
+    resource_id: str,
+    cell_index: int,
+) -> float:
+    spec = world.resource_spec(resource_id)
+    stock = (
+        world.plant_stock_kg[resource_id][cell_index]
+        if resource_id in world.plant_stock_kg
+        else world.animal_stock_kg[resource_id][cell_index]
+    )
+    return (
+        stock
+        * float(spec.get("edible_yield_fraction", 1.0))
+        * float(spec["kcal_per_kg"])
+    )
 
 
 def _processing_success_rate(
