@@ -144,6 +144,7 @@ class HouseholdRuntime:
     last_care_credit_used_hours: float = 0.0
     social_travel_debt_hours: float = 0.0
     shelter_guest_capacity_used: int = 0
+    pending_food_promises: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def skills(self) -> set[str]:
@@ -176,6 +177,8 @@ class SurvivalRunResult:
     social_action_records: list[dict[str, Any]]
     social_action_stats: dict[str, Any]
     person_food_records: list[dict[str, Any]]
+    food_path_records: list[dict[str, Any]]
+    daily_harvest_details: list[dict[str, float | str]]
     resource_consumption_kg: dict[str, float]
     migration_summary: dict[str, Any]
     final_resource_stock_kg: dict[str, float]
@@ -201,6 +204,8 @@ class SurvivalRunResult:
             "social_action_records": self.social_action_records,
             "social_action_stats": self.social_action_stats,
             "person_food_records": self.person_food_records,
+            "food_path_records": self.food_path_records,
+            "daily_harvest_details": self.daily_harvest_details,
             "resource_consumption_kg": self.resource_consumption_kg,
             "migration_summary": self.migration_summary,
             "final_resource_stock_kg": self.final_resource_stock_kg,
@@ -266,6 +271,7 @@ def run_survival_validation(
     social_action_records: list[dict[str, Any]] = []
     social_action_stats = _empty_social_stats()
     person_food_records: list[dict[str, Any]] = []
+    food_path_records: list[dict[str, Any]] = []
     camps_after_day_one_selection: set[int] = set()
 
     for day in range(1, days + 1):
@@ -299,6 +305,7 @@ def run_survival_validation(
             time_account,
             household_daily_records if record_household_trace else None,
             person_daily_records if record_household_trace else None,
+            food_path_records if record_household_trace else None,
         )
         metrics.append(day_metric)
         if enable_social_exchange:
@@ -402,6 +409,8 @@ def run_survival_validation(
         social_action_records=social_action_records,
         social_action_stats=social_action_stats,
         person_food_records=person_food_records,
+        food_path_records=food_path_records,
+        daily_harvest_details=daily_harvest_details,
         resource_consumption_kg={
             key: round(value, 3)
             for key, value in sorted(resource_consumption.items())
@@ -600,6 +609,7 @@ def _simulate_day(
     time_account: dict[str, float],
     household_daily_records: list[dict[str, Any]] | None,
     person_daily_records: list[dict[str, Any]] | None,
+    food_path_records: list[dict[str, Any]] | None,
 ) -> DayMetric:
     food_demand = 0.0
     food_acquired = 0.0
@@ -798,6 +808,7 @@ def _simulate_day(
             daily_harvest_details,
             time_account,
             food_obstacles,
+            food_path_records,
         )
         hours -= food_hours_used
         if (
@@ -1169,6 +1180,12 @@ def _empty_social_stats() -> dict[str, Any]:
             "requests_sent": 0,
             "responses_received": 0,
             "accepted": 0,
+            "current_delivery_commitments": 0,
+            "willing_no_current_resource": 0,
+            "conditional_promises": 0,
+            "promises_executed": 0,
+            "promises_failed": 0,
+            "current_commitment_failures": 0,
             "rejected": 0,
             "executed": 0,
             "not_continued_reasons": {},
@@ -1187,6 +1204,9 @@ def _run_social_exchange_phase(
     behavior_states: dict[str, Any] | None,
 ) -> None:
     runtimes_list = sorted(runtimes.values(), key=lambda item: item.household_id)
+    _process_food_promises(
+        day, runtimes, records, stats
+    )
     for runtime in runtimes_list:
         if runtime.last_care_credit_used_hours > 0.0:
             stats["care"]["executed"] += 1
@@ -1269,10 +1289,19 @@ def _run_social_exchange_phase(
             world.seed + day * 9973,
             requestor.household_id + ":" + donor.household_id + ":" + aid_type,
         )
-        accepted = capacity_available and response_value < willingness
+        willing = response_value < willingness
+        accepted = False
+        response_type = "rejected"
+        response_details: dict[str, Any] = {}
+        executed = False
+        details: dict[str, Any] = {}
         stats[aid_type]["responses_received"] += 1
-        if not accepted:
-            stats[aid_type]["rejected"] += 1
+        if not capacity_available:
+            if willing:
+                stats[aid_type]["willing_no_current_resource"] += 1
+                response_type = "willing_but_no_current_resource"
+            else:
+                stats[aid_type]["rejected"] += 1
             _record_social_reason(
                 records,
                 stats,
@@ -1281,29 +1310,15 @@ def _run_social_exchange_phase(
                 requestor,
                 donor,
                 (
-                    "no_capacity_or_resource"
-                    if not capacity_available
+                    "willing_but_no_current_resource"
+                    if willing
                     else "request_rejected"
                 ),
                 distance_km=distance_km,
                 willingness=willingness,
             )
-            continue
-        stats[aid_type]["accepted"] += 1
-        executed, details = _execute_social_help(
-            world,
-            day,
-            aid_type,
-            donor,
-            requestor,
-            distance_km,
-            behavior_states,
-        )
-        if executed and aid_type != "care":
-            stats[aid_type]["executed"] += 1
-        elif aid_type == "care":
-            details["execution_state"] = "scheduled_for_next_day"
-        else:
+        elif not willing:
+            stats[aid_type]["rejected"] += 1
             _record_social_reason(
                 records,
                 stats,
@@ -1311,8 +1326,69 @@ def _run_social_exchange_phase(
                 aid_type,
                 requestor,
                 donor,
-                details.get("failure_reason", "execution_failed"),
+                "request_rejected",
+                distance_km=distance_km,
+                willingness=willingness,
             )
+        else:
+            current_delivery = True
+            if aid_type == "food":
+                preview = _food_delivery_preview(world, donor, requestor)
+                if preview is None:
+                    current_delivery = False
+                    response_type = "willing_but_no_current_food"
+                    stats[aid_type]["willing_no_current_resource"] += 1
+                else:
+                    response_details = preview
+                    commitment_roll = _stable_unit(
+                        world.seed + day * 3301,
+                        requestor.household_id
+                        + ":food-commit:"
+                        + donor.household_id,
+                    )
+                    current_delivery = (
+                        commitment_roll
+                        < 0.35 + 0.45 * donor_capacity + 0.2 * relation_trust
+                    )
+                    if not current_delivery:
+                        promise = dict(preview)
+                        promise["requestor_id"] = requestor.household_id
+                        promise["due_day"] = day + 1
+                        donor.pending_food_promises.append(promise)
+                        response_type = "conditional_future_promise"
+                        stats[aid_type]["conditional_promises"] += 1
+            if current_delivery:
+                accepted = True
+                response_type = "current_delivery_commitment"
+                stats[aid_type]["current_delivery_commitments"] += 1
+                stats[aid_type]["accepted"] += 1
+                executed, details = _execute_social_help(
+                    world,
+                    day,
+                    aid_type,
+                    donor,
+                    requestor,
+                    distance_km,
+                    behavior_states,
+                )
+                if executed and aid_type != "care":
+                    stats[aid_type]["executed"] += 1
+                elif aid_type == "care":
+                    details["execution_state"] = "scheduled_for_next_day"
+                else:
+                    stats[aid_type]["promises_failed"] += 1
+                    stats[aid_type]["current_commitment_failures"] += 1
+                    _record_social_reason(
+                        records,
+                        stats,
+                        day,
+                        aid_type,
+                        requestor,
+                        donor,
+                        details.get("failure_reason", "execution_failed"),
+                    )
+            else:
+                details = response_details
         records.append(
             {
                 "day": day,
@@ -1325,6 +1401,7 @@ def _run_social_exchange_phase(
                 "willingness": round(willingness, 4),
                 "accepted": accepted,
                 "executed": executed and aid_type != "care",
+                "response_type": response_type,
                 "details": details,
             }
         )
@@ -1335,7 +1412,79 @@ def _run_social_exchange_phase(
             .setdefault(requestor.household_id, {})
             .get(donor.household_id, 0)
             + 1
-        )
+            )
+
+
+def _process_food_promises(
+    day: int,
+    runtimes: dict[str, HouseholdRuntime],
+    records: list[dict[str, Any]],
+    stats: dict[str, Any],
+) -> None:
+    for donor in runtimes.values():
+        remaining: list[dict[str, Any]] = []
+        for promise in donor.pending_food_promises:
+            if int(promise.get("due_day", day)) > day:
+                remaining.append(promise)
+                continue
+            requestor = runtimes.get(str(promise.get("requestor_id", "")))
+            resource_id = str(promise.get("food_resource", ""))
+            kg = float(promise.get("food_kg", 0.0))
+            available = donor.food_store_kg.get(resource_id, 0.0)
+            if requestor is None or available <= 0.0 or kg <= 0.0:
+                stats["food"]["promises_failed"] += 1
+                stats["food"]["not_continued_reasons"][
+                    "promise_failed_no_resource"
+                ] = (
+                    stats["food"]["not_continued_reasons"].get(
+                        "promise_failed_no_resource", 0
+                    )
+                    + 1
+                )
+                records.append(
+                    {
+                        "day": day,
+                        "aid_type": "food",
+                        "requestor_id": promise.get("requestor_id"),
+                        "donor_id": donor.household_id,
+                        "accepted": True,
+                        "executed": False,
+                        "response_type": "promise_failed",
+                        "details": {"reason": "promise_failed_no_resource"},
+                    }
+                )
+                continue
+            actual_kg = min(kg, available)
+            donor.food_store_kg[resource_id] -= actual_kg
+            requestor.food_store_kg[resource_id] = (
+                requestor.food_store_kg.get(resource_id, 0.0)
+                + actual_kg
+            )
+            kcal_per_kg = float(promise.get("kcal_per_kg", 0.0))
+            transferred_kcal = actual_kg * kcal_per_kg
+            donor.food_store_kcal = max(
+                0.0, donor.food_store_kcal - transferred_kcal
+            )
+            requestor.food_store_kcal += transferred_kcal
+            stats["food"]["promises_executed"] += 1
+            stats["food"]["executed"] += 1
+            records.append(
+                {
+                    "day": day,
+                    "aid_type": "food",
+                    "requestor_id": requestor.household_id,
+                    "donor_id": donor.household_id,
+                    "accepted": True,
+                    "executed": True,
+                    "response_type": "future_promise_delivered",
+                    "details": {
+                        "food_resource": resource_id,
+                        "food_kg": round(actual_kg, 6),
+                        "food_kcal": round(transferred_kcal, 3),
+                    },
+                }
+            )
+        donor.pending_food_promises = remaining
 
 
 def _choose_social_need(
@@ -1451,7 +1600,17 @@ def _can_help_with(
     behavior_states: dict[str, Any] | None,
 ) -> bool:
     if aid_type == "water":
-        return donor.water_container_capacity_l >= 1.0
+        requestor_has_mobile_member = any(
+            person.life_stage != "infant" and person.mobility >= 0.5
+            for person in requestor.members
+        )
+        donor_has_time = (
+            donor.last_potential_hours - donor.last_labour_hours >= 0.5
+        )
+        return (
+            donor.water_container_capacity_l >= 1.0
+            or (requestor_has_mobile_member and donor_has_time)
+        )
     if aid_type == "food":
         return _store_kcal_from_runtime(donor) > 0.0
     if aid_type == "fire":
@@ -1477,7 +1636,9 @@ def _help_capacity_score(
     requestor: HouseholdRuntime,
 ) -> float:
     if aid_type == "water":
-        return min(1.0, donor.water_container_capacity_l / 8.0)
+        if donor.water_container_capacity_l >= 1.0:
+            return min(1.0, donor.water_container_capacity_l / 8.0)
+        return 0.3
     if aid_type == "food":
         demand = max(1.0, donor.last_consumed_kcal)
         return min(1.0, _store_kcal_from_runtime(donor) / (demand * 2.0))
@@ -1499,6 +1660,40 @@ def _help_capacity_score(
     return 0.0
 
 
+def _food_delivery_preview(
+    world: WorldState,
+    donor: HouseholdRuntime,
+    requestor: HouseholdRuntime,
+) -> dict[str, Any] | None:
+    if not donor.food_store_kg:
+        return None
+    resource_id = max(donor.food_store_kg, key=donor.food_store_kg.get)
+    spec = world.resource_spec(resource_id)
+    donor_kcal = donor.food_store_kcal
+    donor_surplus = max(0.0, donor_kcal - donor.last_consumed_kcal)
+    requestor_need = max(
+        0.0,
+        sum(_daily_kcal_need(person) for person in requestor.members)
+        - requestor.food_store_kcal,
+    )
+    transfer_kcal = min(donor_surplus * 0.25, requestor_need)
+    if transfer_kcal <= 0.0:
+        return None
+    kg = min(
+        donor.food_store_kg[resource_id],
+        transfer_kcal / float(spec["kcal_per_kg"]),
+    )
+    if kg <= 0.0:
+        return None
+    return {
+        "food_resource": resource_id,
+        "food_kg": round(kg, 6),
+        "food_kcal": round(kg * float(spec["kcal_per_kg"]), 3),
+        "kcal_per_kg": float(spec["kcal_per_kg"]),
+        "condition": "current_household_store",
+    }
+
+
 def _execute_social_help(
     world: WorldState,
     day: int,
@@ -1509,6 +1704,28 @@ def _execute_social_help(
     behavior_states: dict[str, Any] | None,
 ) -> tuple[bool, dict[str, Any]]:
     if aid_type == "water":
+        if donor.water_container_capacity_l <= 0.0:
+            assisted_person = next(
+                (
+                    person
+                    for person in requestor.members
+                    if person.life_stage != "infant"
+                    and person.mobility >= 0.5
+                ),
+                None,
+            )
+            if assisted_person is None:
+                return False, {
+                    "failure_reason": "no_mobile_person_to_escort"
+                }
+            requestor.pending_water_credit_l += 3.0
+            donor.social_travel_debt_hours += distance_km * 2.0 / 4.5
+            return True, {
+                "assistance_type": "escort_to_water_source",
+                "water_litres": 3.0,
+                "execution_time": "next_day",
+                "assisted_person_id": assisted_person.id,
+            }
         delivered = min(
             max(0.0, 3.0 * len(requestor.members) - requestor.pending_water_credit_l),
             min(4.0, donor.water_container_capacity_l),
@@ -2315,21 +2532,37 @@ def _harvest_food(
     daily_harvest_details: list[dict[str, float | str]],
     time_account: dict[str, float],
     food_obstacles: dict[str, int],
+    food_path_records: list[dict[str, Any]] | None,
 ) -> tuple[float, float]:
     if hours <= 0.0 or target_kcal <= 0.0:
         return 0.0, 0.0
     acquired = 0.0
     selected_resource: str | None = None
+    selected_resources: list[str] = []
+    selected_cells: list[int] = []
+    known_resources: dict[str, float] = defaultdict(float)
+    decision_reasons: dict[str, int] = defaultdict(int)
     remaining_hours = hours
+    for resource_id, cell_index, _, _ in runtime.supply_options:
+        if not world.is_available(resource_id):
+            continue
+        spec = world.resource_spec(resource_id)
+        if not _can_harvest_by_member(spec, runtime):
+            continue
+        known_resources[resource_id] += _available_stock_kcal(
+            world, resource_id, cell_index
+        )
     for resource_id, cell_index, _, distance_km in runtime.supply_options:
         if remaining_hours <= 0.02 or acquired >= target_kcal:
             break
         spec = world.resource_spec(resource_id)
         if not world.is_available(resource_id):
             food_obstacles["not_mature_or_out_of_season"] += 1
+            decision_reasons["not_mature_or_out_of_season"] += 1
             continue
         if not _can_harvest_by_member(spec, runtime):
             food_obstacles["no_household_member_with_knowledge"] += 1
+            decision_reasons["no_household_member_with_knowledge"] += 1
             continue
         if resource_id in world.plant_stock_kg:
             stock = world.plant_stock_kg[resource_id][cell_index]
@@ -2337,11 +2570,13 @@ def _harvest_food(
             stock = world.animal_stock_kg[resource_id][cell_index]
         if stock <= 0.001:
             food_obstacles["local_stock_depleted"] += 1
+            decision_reasons["local_stock_depleted"] += 1
             continue
         travel_hours = _distance_walk_hours(distance_km)
         effective_hours = remaining_hours - travel_hours
         if effective_hours <= 0.02:
             food_obstacles["no_time_after_travel"] += 1
+            decision_reasons["no_time_after_travel"] += 1
             continue
         edible_yield = float(spec.get("edible_yield_fraction", 1.0))
         if edible_yield <= 0.0:
@@ -2392,11 +2627,14 @@ def _harvest_food(
             edible_kg = 0.0
             details["processing_failures"] += 1
             food_obstacles["processing_failed"] += 1
+            decision_reasons["processing_failed"] += 1
         runtime.food_store_kg[resource_id] = (
             runtime.food_store_kg.get(resource_id, 0.0) + edible_kg
         )
         if selected_resource is None:
             selected_resource = resource_id
+        selected_resources.append(resource_id)
+        selected_cells.append(cell_index)
         runtime.food_store_kcal += edible_kg * float(spec["kcal_per_kg"])
         consumption[resource_id] = (
             consumption.get(resource_id, 0.0) + stock_kg
@@ -2415,7 +2653,9 @@ def _harvest_food(
         daily_harvest_details.append(
             {
                 "day": world.elapsed_days,
+                "household_id": runtime.household_id,
                 "resource_id": resource_id,
+                "cell_index": cell_index,
                 "stock_kg_removed": stock_kg,
                 "edible_food_kg": edible_kg,
                 "edible_kcal": edible_kg * float(spec["kcal_per_kg"]),
@@ -2428,6 +2668,23 @@ def _harvest_food(
         acquired += edible_kg * float(spec["kcal_per_kg"])
     if selected_resource is not None:
         runtime.last_harvested_resource = selected_resource
+    if food_path_records is not None:
+        food_path_records.append(
+            {
+                "day": world.elapsed_days,
+                "household_id": runtime.household_id,
+                "camp_cell_index": runtime.camp_cell_index,
+                "known_resources": {
+                    resource_id: round(kcal, 3)
+                    for resource_id, kcal in sorted(known_resources.items())
+                },
+                "selected_resources": selected_resources,
+                "selected_cells": selected_cells,
+                "decision_reasons": dict(sorted(decision_reasons.items())),
+                "hours_available": round(hours, 4),
+                "hours_used": round(hours - remaining_hours, 4),
+            }
+        )
     return acquired, hours - remaining_hours
 
 

@@ -140,6 +140,13 @@ def run_seven_day_integration(
         "resource_ledger": run.resource_ledger,
         "daily_metrics": [asdict(metric) for metric in run.metrics],
         "person_food_records": run.person_food_records,
+        "food_path_records": run.food_path_records,
+        "food_chain_trace": _food_chain_trace(
+            run.food_path_records,
+            run.daily_harvest_details,
+            run.metrics,
+            limit_days=5,
+        ),
         "food_intake_summary": _food_intake_summary(
             run.person_food_records
         ),
@@ -353,6 +360,42 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
+    trace = result["food_chain_trace"]
+    lines.extend(
+        [
+            "",
+            "### 主要来源逐日链",
+            "",
+            f"主要来源：`{trace['resource_id']}`。",
+            "",
+            "| 日 | 家庭数 | 采集小时 | 加工小时 | 原料 kg | 可食 kg | "
+            "加工失败 | 切换次数 |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for item in trace["daily"]:
+        lines.append(
+            f"| {item['day']} | {item['households']} | "
+            f"{item['harvest_hours']} | {item['processing_hours']} | "
+            f"{item['stock_kg_removed']} | {item['edible_food_kg']} | "
+            f"{item['processing_failures']} | {item['resource_switches']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "代表性家庭资源选择：",
+            "",
+            "| 日 | 家庭 | 已知替代来源 | 实际选择 | 主要未选原因 | 地点 |",
+            "| ---: | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in trace["representative_households"]:
+        lines.append(
+            f"| {item['day']} | `{item['household_id']}` | "
+            f"{item['known_alternatives']} | {item['selected']} | "
+            f"`{item['main_not_selected_reason']}` | {item['selected_cells']} |"
+        )
+    lines.extend([""])
     for resource_id, ledger in result["resource_ledger"].items():
         lines.append(
             f"| `{resource_id}` | {ledger['opening_stock_kg']} | "
@@ -433,7 +476,7 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             "- `no_labour_time_before_fetch` 表示照护和身体能力修正后，取水前可用工时为 0；"
             "不是人物不知道水源。",
             "- `no_mobile_person` 表示家庭中没有能够自行到达水源的人，"
-            "但跨家庭请求照护或送水尚未接入统一调度。",
+            "请求与陪同路径已经接入；本运行若仍未解决，原因应由接触、回应或执行记录说明。",
             "- 直接饮水本身不受容器门槛限制；容器只影响返回携带、储水或运输。",
             "",
             "## 个人时间与照护交接",
@@ -445,6 +488,12 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             f"- 资格校验失败：`{result['personal_time_audit']['eligibility_violations']}`。",
             f"- 照护记录：`{result['personal_time_audit']['care_records']}`。",
             "- 照护记录使用实际照护者 ID 和时间段；接受未来安排不等于已经完成接手。",
+            f"- 照护对象人数："
+            f"`{len(result['personal_time_audit']['care_recipient_ids'])}`；"
+            f"缺少对象的照护记录："
+            f"`{result['personal_time_audit']['care_records_without_target']}`。",
+            "- “不能自行到水边人数”和“需要儿童/家庭照护人数”口径不同；"
+            "后者可以为正而前者为零。",
             "- `potential` 指身体修正后的可劳动小时，不是全部清醒时间；"
             "剩余部分进入休息或未使用能力。",
             f"- 记录到实际资源格或水源格的活动："
@@ -494,7 +543,7 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             f"`{result['body_fixed_control']['initial_dynamic_mean_capacity']}`，"
             f"固定组为 "
             f"`{result['body_fixed_control']['initial_fixed_mean_capacity']}`，"
-            "因此第一天不同来自初始能力输入，而不是地图差异。",
+            "因此第一天不再存在初始能力差异；后续差异只来自身体状态是否继续变化。",
             f"- 动态结果高于固定对照的天数："
             f"`{sum(value > 0.001 for value in food_differences)}/7`；"
             f"低于固定对照的天数："
@@ -525,17 +574,50 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "| 需求 | 回应 | 接受 | 拒绝 | 执行 | 接受未执行 |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
+            "| 需求 | 回应 | 愿意但当前无资源 | 有条件未来承诺 | "
+            "当前交付承诺 | 拒绝 | 执行 | 未来承诺兑现 | 未来承诺失败 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for aid_type in ("water", "food", "fire", "care", "shelter", "teaching"):
         item = result["social_action_funnel"][aid_type]
         lines.append(
             f"| `{aid_type}` | {item['response_received']} | "
-            f"{item['accepted']} | {item['rejected']} | "
-            f"{item['executed']} | {item['accepted_not_executed']} |"
+            f"{item['willing_no_current_resource']} | "
+            f"{item['conditional_promises']} | "
+            f"{item['current_delivery_commitments']} | "
+            f"{item['rejected']} | {item['executed']} | "
+            f"{item['promises_executed']} | {item['promises_failed']} |"
         )
+    lines.extend(
+        [
+            "",
+            "- 回应闭合："
+            + "；".join(
+                f"`{aid_type}`={result['social_action_funnel'][aid_type]['response_closure_error']}"
+                for aid_type in (
+                    "water",
+                    "food",
+                    "fire",
+                    "care",
+                    "shelter",
+                    "teaching",
+                )
+            ),
+            "- 当前交付承诺闭合："
+            + "；".join(
+                f"`{aid_type}`={result['social_action_funnel'][aid_type]['commitment_closure_error']}"
+                for aid_type in (
+                    "water",
+                    "food",
+                    "fire",
+                    "care",
+                    "shelter",
+                    "teaching",
+                )
+            ),
+        ]
+    )
     lines.extend(
         [
             "",
@@ -642,6 +724,7 @@ def _personal_time_audit(
     overlaps = 0
     over_capacity = 0
     care_records = 0
+    care_recipient_ids: set[str] = set()
     for person_records in by_person_day.values():
         ordered = sorted(person_records, key=lambda item: item["start_minute"])
         for first, second in zip(ordered, ordered[1:]):
@@ -652,6 +735,9 @@ def _personal_time_audit(
         care_records += sum(
             item["category"] == "care" for item in ordered
         )
+        for item in ordered:
+            if item["category"] == "care":
+                care_recipient_ids.update(item.get("target_person_ids", []))
     expected_active_person_days = sum(
         person.life_stage in {"adolescent", "adult", "elder"}
         or (person.life_stage == "child" and person.age_years >= 6)
@@ -681,6 +767,12 @@ def _personal_time_audit(
         "overlaps": overlaps,
         "over_capacity": over_capacity,
         "care_records": care_records,
+        "care_recipient_ids": sorted(care_recipient_ids),
+        "care_records_without_target": sum(
+            item["category"] == "care"
+            and not item.get("target_person_ids")
+            for item in records
+        ),
         "expected_active_person_days": expected_active_person_days,
         "missing_active_person_days": max(
             0, expected_active_person_days - len(by_person_day)
@@ -724,6 +816,104 @@ def _food_intake_summary(
         key=lambda item: (item["intake_ratio"], item["day"], item["person_id"]),
     )[:12]
     return {"daily": daily, "lowest_examples": lowest}
+
+
+def _food_chain_trace(
+    path_records: list[dict[str, Any]],
+    harvest_records: list[dict[str, Any]],
+    metrics: list[Any],
+    limit_days: int,
+) -> dict[str, Any]:
+    recent_harvest = [
+        item for item in harvest_records if int(item["day"]) <= limit_days
+    ]
+    totals: dict[str, float] = {}
+    for item in recent_harvest:
+        resource_id = str(item["resource_id"])
+        totals[resource_id] = totals.get(resource_id, 0.0) + float(
+            item["stock_kg_removed"]
+        )
+    resource_id = max(totals, key=totals.get) if totals else "none"
+    by_day: dict[int, dict[str, float]] = {}
+    households_by_day: dict[int, set[str]] = {}
+    switches_by_day = {
+        int(metric.day): metric.food_resource_switches for metric in metrics
+    }
+    for item in recent_harvest:
+        if item["resource_id"] != resource_id:
+            continue
+        day = int(item["day"])
+        aggregate = by_day.setdefault(
+            day,
+            {
+                "households": 0.0,
+                "harvest_hours": 0.0,
+                "processing_hours": 0.0,
+                "stock_kg_removed": 0.0,
+                "edible_food_kg": 0.0,
+                "processing_failures": 0.0,
+                "resource_switches": 0.0,
+            },
+        )
+        households_by_day.setdefault(day, set()).add(str(item["household_id"]))
+        aggregate["harvest_hours"] += float(item["harvest_hours"])
+        aggregate["processing_hours"] += float(item["processing_hours"])
+        aggregate["stock_kg_removed"] += float(item["stock_kg_removed"])
+        aggregate["edible_food_kg"] += float(item["edible_food_kg"])
+        aggregate["processing_failures"] += float(item["processing_failure"])
+        aggregate["resource_switches"] = switches_by_day.get(day, 0)
+    representatives = []
+    used_households: set[str] = set()
+    for day in range(1, limit_days + 1):
+        candidates = [
+            item
+            for item in path_records
+            if int(item["day"]) == day
+            and resource_id in item.get("selected_resources", [])
+            and item.get("household_id") not in used_households
+        ]
+        if not candidates:
+            continue
+        item = max(
+            candidates,
+            key=lambda candidate: float(candidate["hours_used"]),
+        )
+        used_households.add(str(item["household_id"]))
+        reasons = item.get("decision_reasons", {})
+        main_reason = (
+            max(reasons, key=reasons.get)
+            if reasons
+            else "no_unselected_reason_recorded"
+        )
+        representatives.append(
+            {
+                "day": day,
+                "household_id": item["household_id"],
+                "known_alternatives": sorted(
+                    item.get("known_resources", {})
+                )[:8],
+                "selected": item.get("selected_resources", [])[:5],
+                "main_not_selected_reason": main_reason,
+                "selected_cells": item.get("selected_cells", [])[:5],
+            }
+        )
+    return {
+        "resource_id": resource_id,
+        "reason": "selected by cumulative stock removed during the first five days",
+        "daily": [
+            {
+                "day": day,
+                "households": len(households_by_day.get(day, set())),
+                **{
+                    key: round(value, 6)
+                    for key, value in item.items()
+                    if key != "households"
+                },
+            }
+            for day, item in sorted(by_day.items())
+        ],
+        "representative_households": representatives,
+    }
 
 
 def _water_diagnosis(
@@ -777,6 +967,15 @@ def _social_action_funnel(
     )
     def aid_stats(name: str) -> dict[str, Any]:
         item = stats.get(name, {})
+        accepted_not_executed = max(
+            0, item.get("accepted", 0) - item.get("executed", 0)
+        )
+        response_parts = (
+            item.get("rejected", 0)
+            + item.get("willing_no_current_resource", 0)
+            + item.get("conditional_promises", 0)
+            + item.get("current_delivery_commitments", 0)
+        )
         return {
             "need_events": item.get("need_events", 0),
             "candidate_households": item.get("candidate_households", 0),
@@ -790,10 +989,29 @@ def _social_action_funnel(
             "request_sent": item.get("requests_sent", 0),
             "response_received": item.get("responses_received", 0),
             "accepted": item.get("accepted", 0),
+            "current_delivery_commitments": item.get(
+                "current_delivery_commitments", 0
+            ),
+            "willing_no_current_resource": item.get(
+                "willing_no_current_resource", 0
+            ),
+            "conditional_promises": item.get("conditional_promises", 0),
+            "promises_executed": item.get("promises_executed", 0),
+            "promises_failed": item.get("promises_failed", 0),
+            "current_commitment_failures": item.get(
+                "current_commitment_failures", 0
+            ),
             "rejected": item.get("rejected", 0),
             "executed": item.get("executed", 0),
-            "accepted_not_executed": max(
-                0, item.get("accepted", 0) - item.get("executed", 0)
+            "accepted_not_executed": accepted_not_executed,
+            "response_closure_error": (
+                item.get("responses_received", 0) - response_parts
+            ),
+            "commitment_closure_error": (
+                item.get("current_delivery_commitments", 0)
+                - item.get("executed", 0)
+                - accepted_not_executed
+                - item.get("current_commitment_failures", 0)
             ),
             "not_continued_reasons": item.get(
                 "not_continued_reasons", {}
