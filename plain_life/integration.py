@@ -16,7 +16,7 @@ from .survival import run_survival_validation
 
 def run_seven_day_integration(
     root: Path,
-    version: str = "v4",
+    version: str = "v5",
 ) -> dict[str, Any]:
     baseline = load_environment_baseline(
         root
@@ -146,6 +146,15 @@ def run_seven_day_integration(
             run.daily_harvest_details,
             run.metrics,
             limit_days=5,
+        ),
+        "season_rejection_audit": _season_rejection_audit(
+            run.food_path_records, baseline.raw["resources"]
+        ),
+        "fishing_exit_diagnosis": _fishing_exit_diagnosis(
+            run.food_path_records,
+            run.person_daily_records,
+            run.household_daily_records,
+            population,
         ),
         "food_intake_summary": _food_intake_summary(
             run.person_food_records
@@ -352,12 +361,6 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             f"跨家庭求助请求："
             f"`{sum(result['social_action_funnel'][key]['request_sent'] for key in ('water', 'food', 'fire', 'care', 'shelter', 'teaching'))}`。",
             "- 这些数量用于确认人物会切换资源、迁移或求助，较差的后续收益仍必须单独解释。",
-            "",
-            "## 资源收支",
-            "",
-            "| 资源 | 期初 kg | 新增 kg | 采集/捕获 kg | 自然损失 kg | "
-            "期末 kg | 闭合误差 kg | 非负 |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     trace = result["food_chain_trace"]
@@ -395,7 +398,221 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
             f"{item['known_alternatives']} | {item['selected']} | "
             f"`{item['main_not_selected_reason']}` | {item['selected_cells']} |"
         )
-    lines.extend([""])
+    season = result["season_rejection_audit"]
+    world_days = season["observed_world_days"]
+    lines.extend(
+        [
+            "",
+            "### 替代资源季节拒绝核对",
+            "",
+            f"- 季节拒绝核对记录：`{season['records_examined']}` 个家庭日。",
+            f"- 投放瞬间为世界年内第 `{season['drop_instant_day_of_year']}` 日；"
+            f"本次记录的完整日为第 `{world_days[0]}`–`{world_days[-1]}` 日。",
+            f"- 日期来源：`{season['season_model']}`；"
+            f"局部成熟度是否建模：`{season['local_maturity_modeled']}`。",
+            f"- 仅因季节窗口不符的拒绝："
+            f"`{season['season_only_by_resource']}`。",
+            f"- 季节窗口内却被标记为过季的错误："
+            f"`{season['incorrect_outside_window_rejections']}`。",
+            f"- 缺少世界年内日期的路径记录："
+            f"`{season['records_without_day_of_year']}`。",
+            "",
+            "| 资源 | 季节窗口 | 季节拒绝检查 | 其他拒绝原因（候选格检查次数） | 结论 |",
+            "| --- | --- | ---: | --- | --- |",
+        ]
+    )
+    rankings = [
+        "cattail",
+        "arrowhead",
+        "mixed_berries",
+        "hazelnut",
+        "oak_acorn",
+        "spring_greens",
+        "fish",
+        "waterfowl",
+        "hare",
+        "deer",
+    ]
+    for resource_id in rankings:
+        assessment = season["resource_assessments"][resource_id]
+        nonseason = ", ".join(
+            f"{reason}={count}"
+            for reason, count in assessment[
+                "non_season_rejection_counts"
+            ].items()
+        )
+        lines.append(
+            f"| `{resource_id}` | "
+            f"`{assessment['availability_day_range']}` | "
+            f"{assessment['outside_window_rejections']} | "
+            f"{nonseason or '无'} | "
+            f"`{assessment['conclusion']}` |"
+        )
+    lines.extend(
+        [
+            "",
+            "只抽取实际被标为季节不符的具体资源格；这些记录均核对世界年内日"
+            "和当前 `availability_day_range`。",
+            "",
+            "| 投放后日 | 世界年内日 | 家庭 | 营地格 | 资源 | 资源格 | 季节窗口 | 窗口内 |",
+            "| ---: | ---: | --- | ---: | --- | ---: | --- | --- |",
+        ]
+    )
+    for item in season["samples"]:
+        lines.append(
+            f"| {item['day']} | {item['day_of_year']} | "
+            f"`{item['household_id']}` | {item['camp_cell_index']} | "
+            f"`{item['resource_id']}` | {item['cell_index']} | "
+            f"`{item['availability_day_range']}` | "
+            f"{item['inside_configured_window']} |"
+        )
+    fishing = result["fishing_exit_diagnosis"]
+    lines.extend(
+        [
+            "",
+            "### 捕鱼退出原因",
+            "",
+            f"- 第 2 日参与捕鱼的家庭：`{fishing['day_2_fishing_households']}`。",
+            f"- 第 4 日全体参与捕鱼："
+            f"`{fishing['day_4_fishing_households_all']}`；"
+            f"其中来自第 2 日捕鱼队列："
+            f"`{fishing['day_4_fishing_households_from_day_2']}`。",
+            f"- 第 5 日全体参与捕鱼："
+            f"`{fishing['day_5_fishing_households_all']}`；"
+            f"其中来自第 2 日捕鱼队列："
+            f"`{fishing['day_5_fishing_households_from_day_2']}`。",
+            f"- 第 2 日参与、但第 4 与第 5 日均未再取得鱼的家庭队列："
+            f"`{fishing['exited_both_days_households']}`。",
+            f"- 后续两日按家庭日分类："
+            f"`{fishing['exit_daily_classification']}`。",
+            f"- 退出队列按家庭归并："
+            f"`{fishing['exit_cohort_classification']}`。",
+            f"- 退出队列第 4–5 日仍已知有正鱼群存量的家庭日："
+            f"`{fishing['exit_cohort_household_days_with_positive_fish_stock']}`。",
+            f"- 退出队列第 4–5 日有正替代资源存量的家庭日："
+            f"`{fishing['exit_cohort_household_days_with_positive_alternative']}`；"
+            "没有正替代资源的家庭日："
+            f"`{fishing['exit_cohort_household_days_without_positive_alternative']}`。",
+            f"- 退出队列实际选择的资源计数："
+            f"`{fishing['exit_cohort_selected_resources']}`。",
+            f"- 退出队列家庭食物满足率："
+            f"`{fishing['exit_cohort_food_ratio']}`。",
+            f"- 退出队列营地分布："
+            f"`{fishing['exit_cohort_camp_distribution']}`。",
+            "",
+            "| 日 | 选中鱼类资源格次数 | 不同鱼类资源格 | 单格最多家庭 | 前五资源格 |",
+            "| ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for day, item in fishing["fish_selected_cells_by_day"].items():
+        top_cells = ", ".join(
+            f"{entry['cell_index']}:{entry['households']}"
+            for entry in item["top_cells"]
+        )
+        lines.append(
+            f"| {day} | {item['selected_cell_occurrences']} | "
+            f"{item['distinct_selected_cells']} | "
+            f"{item['largest_cell_households']} | {top_cells} |"
+        )
+    lines.extend(
+        [
+            "",
+            "#### 捕鱼减少后的时间去向",
+            "",
+            "| 时间类别 | 第 2 日均值 | 第 4–5 日均值 |",
+            "| --- | ---: | ---: |",
+        ]
+    )
+    categories = sorted(
+        set(fishing["aggregate_time_shift_per_exiting_household"]["day_2"])
+        | set(
+            fishing["aggregate_time_shift_per_exiting_household"][
+                "mean_day_4_5"
+            ]
+        )
+    )
+    for category in categories:
+        lines.append(
+            f"| `{category}` | "
+            f"{fishing['aggregate_time_shift_per_exiting_household']['day_2'].get(category, 0.0)} | "
+            f"{fishing['aggregate_time_shift_per_exiting_household']['mean_day_4_5'].get(category, 0.0)} |"
+        )
+    fish_activity_day_2 = fishing[
+        "resource_activity_shift_per_exiting_household"
+    ]["day_2_fish"]
+    lines.extend(
+        [
+            "",
+            "| 第 2 日鱼类资源活动 | 家庭均值 |",
+            "| --- | ---: |",
+        ]
+    )
+    for key, value in fish_activity_day_2.items():
+        lines.append(f"| `{key}` | {value} |")
+    lines.extend(
+        [
+            "",
+            "| 第 4–5 日替代资源 | 资源格 | 原料 kg | 可食 kg | 采集小时 | 加工小时 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    alternative_activity = fishing[
+        "resource_activity_shift_per_exiting_household"
+    ]["day_4_5_alternatives"]
+    for resource_id, activity in alternative_activity.items():
+        lines.append(
+            f"| `{resource_id}` | {activity.get('cells_selected', 0)} | "
+            f"{activity.get('stock_kg_removed', 0.0)} | "
+            f"{activity.get('edible_food_kg', 0.0)} | "
+            f"{activity.get('harvest_hours', 0.0)} | "
+            f"{activity.get('processing_hours', 0.0)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "#### 退出队列代表性证据",
+            "",
+            "| 家庭 | 日 | 分类 | 当日选择 | 已知鱼 kcal | 鱼候选拒绝 | 可用小时 | 照护小时 | 食物比例 |",
+            "| --- | ---: | --- | --- | ---: | --- | ---: | ---: | ---: |",
+        ]
+    )
+    for item in fishing["representative_exits"]:
+        for day_item in item["daily"]:
+            lines.append(
+                f"| `{item['household_id']}` | {day_item['day']} | "
+                f"`{day_item['reason']}` | "
+                f"{day_item['selected_resources']} | "
+                f"{day_item['known_fish_kcal']} | "
+                f"`{day_item['fish_rejection_counts']}` | "
+                f"{day_item['hours_available']} | "
+                f"{day_item['care_hours']} | "
+                f"{day_item['food_ratio']} |"
+            )
+    lines.extend(
+        [
+            "",
+            "| 家庭 | 日 | 人物 | 活动 | 小时 | 地点格 | 说明 |",
+            "| --- | ---: | --- | --- | ---: | ---: | --- |",
+        ]
+    )
+    for item in fishing["representative_exits"][:2]:
+        for activity in item["person_activity_trace"][:10]:
+            lines.append(
+                f"| `{item['household_id']}` | {activity['day']} | "
+                f"`{activity['person_id']}` | `{activity['category']}` | "
+                f"{activity['hours']} | {activity['location_cell']} | "
+                f"`{activity['detail']}` |"
+            )
+    lines.extend(
+        [
+            "",
+            "## 资源收支",
+            "",
+            "| 资源 | 期初 kg | 新增 kg | 采集/捕获 kg | 自然损失 kg | "
+            "期末 kg | 闭合误差 kg | 非负 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
     for resource_id, ledger in result["resource_ledger"].items():
         lines.append(
             f"| `{resource_id}` | {ledger['opening_stock_kg']} | "
@@ -913,6 +1130,550 @@ def _food_chain_trace(
             for day, item in sorted(by_day.items())
         ],
         "representative_households": representatives,
+    }
+
+
+def _season_rejection_audit(
+    path_records: list[dict[str, Any]],
+    resource_specs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    windows = {
+        item["id"]: item["availability_day_range"]
+        for item in resource_specs
+    }
+    by_resource: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    season_only_by_resource: dict[str, int] = {}
+    nonseason_by_resource: dict[str, dict[str, int]] = {}
+    samples: list[dict[str, Any]] = []
+    observed_world_days: set[int] = set()
+    day_to_world_day: dict[int, int] = {}
+    records_without_day_of_year = 0
+    incorrect = 0
+    for path in path_records:
+        world_day = path.get("day_of_year")
+        if world_day is None:
+            records_without_day_of_year += 1
+        else:
+            world_day = int(world_day)
+            observed_world_days.add(world_day)
+            day_to_world_day[int(path["day"])] = world_day
+        for resource_id, reason_counts in path.get(
+            "rejection_summary", {}
+        ).items():
+            for reason, count in reason_counts.items():
+                by_resource[resource_id] = (
+                    by_resource.get(resource_id, 0) + count
+                )
+                by_reason[reason] = by_reason.get(reason, 0) + count
+                if reason == "outside_availability_window":
+                    season_only_by_resource[resource_id] = (
+                        season_only_by_resource.get(resource_id, 0) + count
+                    )
+                else:
+                    resource_reasons = nonseason_by_resource.setdefault(
+                        resource_id, {}
+                    )
+                    resource_reasons[reason] = (
+                        resource_reasons.get(reason, 0) + count
+                    )
+        for rejection in path.get("rejected_resource_cells", []):
+            resource_id = rejection["resource_id"]
+            reason = rejection["reason"]
+            rejection_day = int(rejection["day_of_year"])
+            window = windows.get(resource_id)
+            inside_window = (
+                window is not None
+                and int(window[0]) <= rejection_day <= int(window[1])
+            )
+            if reason == "outside_availability_window" and inside_window:
+                incorrect += 1
+            if (
+                reason == "outside_availability_window"
+                and len(samples) < 30
+            ):
+                samples.append(
+                    {
+                        "day": path["day"],
+                        "day_of_year": rejection_day,
+                        "household_id": path["household_id"],
+                        "resource_id": resource_id,
+                        "cell_index": rejection["cell_index"],
+                        "camp_cell_index": path["camp_cell_index"],
+                        "reason": reason,
+                        "availability_day_range": window,
+                        "inside_configured_window": inside_window,
+                    }
+                )
+    resource_assessments: dict[str, dict[str, Any]] = {}
+    for resource_id, window in windows.items():
+        reasons = nonseason_by_resource.get(resource_id, {})
+        season_count = season_only_by_resource.get(resource_id, 0)
+        resource_assessments[resource_id] = {
+            "availability_day_range": window,
+            "outside_window_rejections": season_count,
+            "non_season_rejection_counts": dict(sorted(reasons.items())),
+            "conclusion": (
+                "season_window_rejected"
+                if season_count
+                else "not_rejected_by_season_in_this_run"
+            ),
+        }
+    sorted_world_days = sorted(observed_world_days)
+    first_simulated_day = day_to_world_day.get(1)
+    drop_instant_day = (
+        first_simulated_day - 1 if first_simulated_day is not None else None
+    )
+    return {
+        "records_examined": len(path_records),
+        "records_without_day_of_year": records_without_day_of_year,
+        "drop_instant_day_of_year": drop_instant_day,
+        "observed_world_days": sorted_world_days,
+        "day_to_world_day": {
+            str(day): world_day
+            for day, world_day in sorted(day_to_world_day.items())
+        },
+        "season_model": "whole_resource_cell_uses_day_of_year_window",
+        "local_maturity_modeled": False,
+        "by_resource": dict(sorted(by_resource.items())),
+        "season_only_by_resource": dict(
+            sorted(season_only_by_resource.items())
+        ),
+        "by_reason": dict(sorted(by_reason.items())),
+        "resource_assessments": resource_assessments,
+        "incorrect_outside_window_rejections": incorrect,
+        "samples": samples,
+    }
+
+
+def _fishing_exit_diagnosis(
+    path_records: list[dict[str, Any]],
+    activity_records: list[dict[str, Any]],
+    household_daily_records: list[dict[str, Any]],
+    population: Any,
+) -> dict[str, Any]:
+    day_two = {
+        item["household_id"]
+        for item in path_records
+        if int(item["day"]) == 2
+        and "fish" in item.get("selected_resources", [])
+    }
+    records_by_household_day = {
+        (item["household_id"], int(item["day"])): item
+        for item in path_records
+    }
+    day_four = {
+        household_id
+        for household_id in day_two
+        if "fish"
+        in records_by_household_day.get((household_id, 4), {}).get(
+            "selected_resources", []
+        )
+    }
+    day_five = {
+        household_id
+        for household_id in day_two
+        if "fish"
+        in records_by_household_day.get((household_id, 5), {}).get(
+            "selected_resources", []
+        )
+    }
+    exit_households = day_two - day_four - day_five
+    fish_selected_cells_by_day: dict[str, dict[str, Any]] = {}
+    for day in range(1, 8):
+        cell_counts: dict[int, int] = {}
+        for record in path_records:
+            if int(record["day"]) != day:
+                continue
+            for resource_id, cell_index in zip(
+                record.get("selected_resources", []),
+                record.get("selected_cells", []),
+            ):
+                if resource_id == "fish":
+                    cell_counts[int(cell_index)] = (
+                        cell_counts.get(int(cell_index), 0) + 1
+                    )
+        fish_selected_cells_by_day[str(day)] = {
+            "selected_cell_occurrences": sum(cell_counts.values()),
+            "distinct_selected_cells": len(cell_counts),
+            "largest_cell_households": (
+                max(cell_counts.values()) if cell_counts else 0
+            ),
+            "top_cells": [
+                {"cell_index": cell_index, "households": count}
+                for cell_index, count in sorted(
+                    cell_counts.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )[:5]
+            ],
+        }
+    exit_camp_counts: dict[int, int] = {}
+    for household_id in exit_households:
+        record = records_by_household_day.get((household_id, 5))
+        if record is None:
+            continue
+        camp_index = int(record["camp_cell_index"])
+        exit_camp_counts[camp_index] = exit_camp_counts.get(camp_index, 0) + 1
+
+    def classify_exit(record: dict[str, Any] | None) -> str:
+        if record is None:
+            return "no_food_path_record"
+        if "fish" in record.get("selected_resources", []):
+            return "still_fishing"
+        if record.get("hours_available", 0.0) <= 0.01:
+            return "no_labour_time_after_care_or_body_limit"
+        fish_rejections = record.get("rejection_summary", {}).get(
+            "fish", {}
+        )
+        known_fish_kcal = float(
+            record.get("known_resources", {}).get("fish", 0.0)
+        )
+        if (
+            fish_rejections.get("local_stock_depleted", 0) > 0
+            and known_fish_kcal <= 0.001
+        ):
+            return "known_fish_cells_depleted"
+        if fish_rejections.get("no_time_after_travel", 0) > 0:
+            return "travel_time_insufficient"
+        if (
+            fish_rejections.get(
+                "no_household_member_with_knowledge", 0
+            )
+            > 0
+            and known_fish_kcal <= 0.001
+        ):
+            return "no_current_fishing_knowledge"
+        if record.get("selected_resources"):
+            return "switched_to_other_resource"
+        if known_fish_kcal > 0.001:
+            return "fish_known_but_not_selected"
+        fish_candidates = record.get("candidate_summary", {}).get(
+            "fish", {}
+        )
+        if (
+            fish_candidates.get("examined_candidates", 0) > 0
+            and fish_candidates.get("available_stock_cells", 0) == 0
+        ):
+            return "fish_candidates_unavailable"
+        return "fish_not_known_or_not_accessible"
+
+    daily_classification: dict[str, int] = {}
+    for household_id in sorted(day_two):
+        for day in (4, 5):
+            reason = classify_exit(
+                records_by_household_day.get((household_id, day))
+            )
+            daily_classification[reason] = (
+                daily_classification.get(reason, 0) + 1
+            )
+    cohort_classification: dict[str, int] = {}
+    for household_id in sorted(exit_households):
+        reasons = {
+            classify_exit(records_by_household_day.get((household_id, day)))
+            for day in (4, 5)
+        }
+        if reasons == {"known_fish_cells_depleted"}:
+            reason = "known_fish_cells_depleted_both_days"
+        elif "no_labour_time_after_care_or_body_limit" in reasons:
+            reason = "labour_limit_on_at_least_one_day"
+        elif "travel_time_insufficient" in reasons:
+            reason = "travel_time_limit_on_at_least_one_day"
+        elif reasons == {"switched_to_other_resource"}:
+            reason = "switched_to_other_resource_both_days"
+        else:
+            reason = "mixed_or_other_reason"
+        cohort_classification[reason] = (
+            cohort_classification.get(reason, 0) + 1
+        )
+
+    household_by_person = {
+        person.id: person.household_id for person in population.people
+    }
+    activity_by_household = {
+        household_id: {
+            "day_2": {},
+            "day_4_5": {},
+        }
+        for household_id in day_two
+    }
+    time_destinations: dict[str, dict[str, float]] = {}
+    for activity in activity_records:
+        household_id = household_by_person.get(activity["person_id"])
+        if household_id not in activity_by_household:
+            continue
+        day = int(activity["day"])
+        bucket = "day_2" if day == 2 else "day_4_5" if day in {4, 5} else None
+        if bucket is None:
+            continue
+        category = activity["category"]
+        activity_by_household[household_id][bucket][category] = (
+            activity_by_household[household_id][bucket].get(category, 0.0)
+            + float(activity["hours"])
+        )
+    for household_id, buckets in activity_by_household.items():
+        divisor = 2.0
+        baseline = buckets["day_2"]
+        later = {
+            category: round(value / divisor, 6)
+            for category, value in sorted(buckets["day_4_5"].items())
+        }
+        time_destinations[household_id] = {
+            "day_2": {
+                key: round(value, 6)
+                for key, value in sorted(baseline.items())
+            },
+            "mean_day_4_5": later,
+        }
+    food_ratio_by_household_day = {
+        (item["household_id"], int(item["day"])): float(item["food_ratio"])
+        for item in household_daily_records
+    }
+    cohort_food_ratios: dict[str, dict[str, float | int | None]] = {}
+    for day in (2, 4, 5):
+        values = [
+            food_ratio_by_household_day[(household_id, day)]
+            for household_id in exit_households
+            if (household_id, day) in food_ratio_by_household_day
+        ]
+        cohort_food_ratios[str(day)] = {
+            "sample_households": len(values),
+            "mean": round(sum(values) / len(values), 6) if values else None,
+            "minimum": round(min(values), 6) if values else None,
+        }
+    selected_resource_counts: dict[str, int] = {}
+    no_positive_alternative_household_days = 0
+    positive_alternative_household_days = 0
+    positive_fish_household_days = 0
+    for household_id in exit_households:
+        for day in (4, 5):
+            record = records_by_household_day.get((household_id, day))
+            if record is None:
+                continue
+            known_resources = record.get("known_resources", {})
+            if float(known_resources.get("fish", 0.0)) > 0.001:
+                positive_fish_household_days += 1
+            if any(
+                resource_id != "fish" and float(kcal) > 0.001
+                for resource_id, kcal in known_resources.items()
+            ):
+                positive_alternative_household_days += 1
+            else:
+                no_positive_alternative_household_days += 1
+            for resource_id in record.get("selected_resources", []):
+                selected_resource_counts[resource_id] = (
+                    selected_resource_counts.get(resource_id, 0) + 1
+                )
+    resource_activity_shift: dict[str, dict[str, Any]] = {
+        "day_2_fish": {},
+        "day_4_5_alternatives": {},
+    }
+    for household_id in exit_households:
+        fish_activity = (
+            records_by_household_day.get((household_id, 2), {})
+            .get("resource_activity", {})
+            .get("fish", {})
+        )
+        for key, value in fish_activity.items():
+            resource_activity_shift["day_2_fish"][key] = round(
+                float(resource_activity_shift["day_2_fish"].get(key, 0.0))
+                + float(value),
+                6,
+            )
+        for day in (4, 5):
+            record = records_by_household_day.get((household_id, day))
+            if record is None:
+                continue
+            for resource_id, activity in record.get(
+                "resource_activity", {}
+            ).items():
+                bucket = resource_activity_shift[
+                    "day_4_5_alternatives"
+                ].setdefault(resource_id, {})
+                for key, value in activity.items():
+                    bucket[key] = round(
+                        float(bucket.get(key, 0.0)) + float(value), 6
+                    )
+    aggregate_day_2: dict[str, float] = {}
+    aggregate_day_4_5: dict[str, float] = {}
+    for household_id in exit_households:
+        buckets = activity_by_household[household_id]
+        for category, value in buckets["day_2"].items():
+            aggregate_day_2[category] = (
+                aggregate_day_2.get(category, 0.0) + value
+            )
+        for category, value in buckets["day_4_5"].items():
+            aggregate_day_4_5[category] = (
+                aggregate_day_4_5.get(category, 0.0) + value
+            )
+    exit_count = max(1, len(exit_households))
+    for key, value in list(
+        resource_activity_shift["day_2_fish"].items()
+    ):
+        resource_activity_shift["day_2_fish"][key] = round(
+            float(value) / exit_count, 6
+        )
+    for resource_id, activity in resource_activity_shift[
+        "day_4_5_alternatives"
+    ].items():
+        for key, value in list(activity.items()):
+            activity[key] = round(float(value) / exit_count / 2.0, 6)
+
+    activity_trace_by_household: dict[str, list[dict[str, Any]]] = {}
+    for activity in activity_records:
+        household_id = household_by_person.get(activity["person_id"])
+        if (
+            household_id in exit_households
+            and int(activity["day"]) in {2, 4, 5}
+        ):
+            activity_trace_by_household.setdefault(
+                household_id, []
+            ).append(
+                {
+                    "day": activity["day"],
+                    "person_id": activity["person_id"],
+                    "category": activity["category"],
+                    "hours": activity["hours"],
+                    "detail": activity.get("detail"),
+                    "location_cell": activity.get("location_cell"),
+                    "location_precision": activity.get(
+                        "location_precision"
+                    ),
+                }
+            )
+
+    representative_households: list[str] = []
+    seen_reasons: set[str] = set()
+    for household_id in sorted(exit_households):
+        reasons = [
+            classify_exit(records_by_household_day.get((household_id, day)))
+            for day in (4, 5)
+        ]
+        reason = reasons[0] if len(reasons) == 1 else "mixed"
+        if reason in seen_reasons and len(representative_households) >= 6:
+            continue
+        seen_reasons.add(reason)
+        representative_households.append(household_id)
+        if len(representative_households) >= 10:
+            break
+    representative_exits = []
+    for household_id in representative_households:
+        representative_exits.append(
+            {
+                "household_id": household_id,
+                "daily": [
+                    {
+                        "day": day,
+                        "reason": classify_exit(
+                            records_by_household_day.get(
+                                (household_id, day)
+                            )
+                        ),
+                        "selected_resources": (
+                            records_by_household_day.get(
+                                (household_id, day), {}
+                            ).get("selected_resources", [])
+                        ),
+                        "known_fish_kcal": records_by_household_day.get(
+                            (household_id, day), {}
+                        )
+                        .get("known_resources", {})
+                        .get("fish", 0.0),
+                        "fish_rejection_counts": records_by_household_day.get(
+                            (household_id, day), {}
+                        )
+                        .get("rejection_summary", {})
+                        .get("fish", {}),
+                        "candidate_summary": records_by_household_day.get(
+                            (household_id, day), {}
+                        )
+                        .get("candidate_summary", {})
+                        .get("fish", {}),
+                        "food_ratio": food_ratio_by_household_day.get(
+                            (household_id, day)
+                        ),
+                        "hours_available": records_by_household_day.get(
+                            (household_id, day), {}
+                        ).get("hours_available"),
+                        "care_hours": records_by_household_day.get(
+                            (household_id, day), {}
+                        ).get("care_hours"),
+                    }
+                    for day in (2, 4, 5)
+                ],
+                "time_destination": time_destinations[household_id],
+                "person_activity_trace": activity_trace_by_household.get(
+                    household_id, []
+                )[:18],
+            }
+        )
+    return {
+        "day_2_fishing_households": len(day_two),
+        "day_4_fishing_households_all": len(
+            {
+                item["household_id"]
+                for item in path_records
+                if int(item["day"]) == 4
+                and "fish" in item.get("selected_resources", [])
+            }
+        ),
+        "day_5_fishing_households_all": len(
+            {
+                item["household_id"]
+                for item in path_records
+                if int(item["day"]) == 5
+                and "fish" in item.get("selected_resources", [])
+            }
+        ),
+        "day_4_fishing_households_from_day_2": len(day_four),
+        "day_5_fishing_households_from_day_2": len(day_five),
+        "exited_both_days_households": len(exit_households),
+        "fish_selected_cells_by_day": fish_selected_cells_by_day,
+        "exit_cohort_camp_distribution": {
+            "distinct_camps": len(exit_camp_counts),
+            "largest_camp_households": (
+                max(exit_camp_counts.values()) if exit_camp_counts else 0
+            ),
+            "camps": [
+                {"camp_cell_index": cell_index, "households": count}
+                for cell_index, count in sorted(
+                    exit_camp_counts.items(),
+                    key=lambda item: (-item[1], item[0]),
+                )[:10]
+            ],
+        },
+        "exit_daily_classification": dict(
+            sorted(daily_classification.items())
+        ),
+        "exit_cohort_classification": dict(
+            sorted(cohort_classification.items())
+        ),
+        "aggregate_time_shift_per_exiting_household": {
+            "day_2": {
+                key: round(value / exit_count, 6)
+                for key, value in sorted(aggregate_day_2.items())
+            },
+            "mean_day_4_5": {
+                key: round(value / exit_count / 2.0, 6)
+                for key, value in sorted(aggregate_day_4_5.items())
+            },
+        },
+        "resource_activity_shift_per_exiting_household": (
+            resource_activity_shift
+        ),
+        "exit_cohort_selected_resources": dict(
+            sorted(selected_resource_counts.items())
+        ),
+        "exit_cohort_household_days_with_positive_alternative": (
+            positive_alternative_household_days
+        ),
+        "exit_cohort_household_days_without_positive_alternative": (
+            no_positive_alternative_household_days
+        ),
+        "exit_cohort_household_days_with_positive_fish_stock": (
+            positive_fish_household_days
+        ),
+        "exit_cohort_food_ratio": cohort_food_ratios,
+        "representative_exits": representative_exits,
     }
 
 

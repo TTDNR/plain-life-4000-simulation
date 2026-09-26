@@ -71,3 +71,13 @@ v1 的“自然再生量可能支持长期生存”判断已被撤销。该判�
 - [v4 七天整合诊断](v4/SEVEN_DAY_INTEGRATION.md)
 - [v4 变更记录](v4/CHANGES.md)
 - [v4 审计](v4/PHASE1_AUDIT.md)
+
+## v5
+
+状态：季节拒绝与捕鱼退出证据诊断版；已附初步开局相容性评估，正式长期模拟仍暂停。
+
+- [v5 状态](v5/PHASE1_STATUS.md)
+- [v5 七天整合诊断](v5/SEVEN_DAY_INTEGRATION.md)
+- [v5 开局相容性评估](v5/COMPATIBILITY_ASSESSMENT.md)
+- [v5 变更记录](v5/CHANGES.md)
+- [v5 审计](v5/PHASE1_AUDIT.md)

@@ -2,27 +2,27 @@
 
 ## 当前版本
 
-`v4` 基础行为接入诊断版，暂不验收，不启动正式长期模拟。
+`v5` 季节拒绝与捕鱼退出诊断版，暂不验收，不启动正式长期模拟。
 
 当前状态：
 
-- 家庭分配、局部求助、火种、照护、住所和基础教学已接入七天循环。
-- 七天食物摄入仍由约 49% 降至约 5%；前三天去重热点热量仍高于需求，
-  因此断点首先在知识、加工和实际获取，而不是全局库存。
-- 社会求助已产生真实请求、拒绝和接受；当前食物接受后无可交付余粮，
-  未发生实际交付。住所请求因未满足触发条件为零。
-- 食物链已按日记录已知资源、获取、加工、库存、资源切换和受阻原因。
-- 有 131 个家庭日低于 80% 饮水需求，完整遮蔽为零，部分遮蔽覆盖 862 户、3599 人。
+- 鹿、兔、鱼、水禽、香蒲和春季嫩叶没有季节拒绝记录；真实季节拒绝来自
+  箭叶、浆果、榛子和橡子。
+- 第 2 日 651 户捕鱼；第 4 与第 5 日均未再取得鱼的 238 户中，
+  235 户两日都因已知鱼类候选格耗尽退出。
+- 全图鱼类并未耗尽；期末仍有约 99,785 kg。问题集中在少量共享资源格。
+- 七天食物摄入仍由约 49% 降至约 5%；固定初始能力对照同样降至约 5%。
+- 初步相容性评估指出，必须先隔离 20 个集中营地与共享候选格造成的局部压力。
 - 第 6 天触发内部诊断警戒线。
 - 正式长期模拟继续暂停。
 
 完整机器结果位于版本目录：
 
 - [版本索引](versions/README.md)
-- [v4 人物与家庭短场景](versions/v4/BEHAVIOR_SCENARIOS.md)
-- [v4 七天整合诊断](versions/v4/SEVEN_DAY_INTEGRATION.md)
-- [v4 变更记录](versions/v4/CHANGES.md)
-- [v4 审计](versions/v4/PHASE1_AUDIT.md)
+- [v5 七天整合诊断](versions/v5/SEVEN_DAY_INTEGRATION.md)
+- [v5 开局相容性评估](versions/v5/COMPATIBILITY_ASSESSMENT.md)
+- [v5 变更记录](versions/v5/CHANGES.md)
+- [v5 审计](versions/v5/PHASE1_AUDIT.md)
 - [v3 年度固定压力测试](versions/v3/OPENING_SURVIVAL_REVIEW.md)
 
 ## v1 保留
@@ -36,7 +36,7 @@ v1 的秋季温带基线和失败结果未被覆盖，存放于
 ```powershell
 py -3.12 -m unittest discover -s tests -v
 py -3.12 tools\run_behavior_scenarios.py v4
-py -3.12 tools\run_integration_diagnostic.py v4
+py -3.12 tools\run_integration_diagnostic.py v5
 py -3.12 tools\run_phase1.py --version v3 --days 365 --allow-failed
 ```
 

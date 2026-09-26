@@ -55,6 +55,94 @@ class IntegrationDiagnosticTests(unittest.TestCase):
         self.assertEqual(0, integration["deaths"])
         self.assertGreaterEqual(integration["minimum_work_capacity"], 0.05)
 
+    def test_season_rejection_audit_is_resource_specific(self) -> None:
+        season = self.result["season_rejection_audit"]
+        self.assertEqual(0, season["records_without_day_of_year"])
+        self.assertEqual(90, season["drop_instant_day_of_year"])
+        self.assertEqual(list(range(91, 98)), season["observed_world_days"])
+        self.assertEqual(
+            "whole_resource_cell_uses_day_of_year_window",
+            season["season_model"],
+        )
+        self.assertFalse(season["local_maturity_modeled"])
+        self.assertEqual(0, season["incorrect_outside_window_rejections"])
+        self.assertEqual(
+            {
+                "arrowhead",
+                "mixed_berries",
+                "hazelnut",
+                "oak_acorn",
+            },
+            set(season["season_only_by_resource"]),
+        )
+        for resource_id in (
+            "cattail",
+            "spring_greens",
+            "fish",
+            "waterfowl",
+            "hare",
+            "deer",
+        ):
+            self.assertEqual(
+                0,
+                season["resource_assessments"][resource_id][
+                    "outside_window_rejections"
+                ],
+            )
+
+    def test_fishing_exits_have_specific_cause_and_time_destination(self) -> None:
+        fishing = self.result["fishing_exit_diagnosis"]
+        self.assertEqual(651, fishing["day_2_fishing_households"])
+        self.assertEqual(420, fishing["day_4_fishing_households_all"])
+        self.assertEqual(200, fishing["day_5_fishing_households_all"])
+        self.assertEqual(
+            413, fishing["day_4_fishing_households_from_day_2"]
+        )
+        self.assertEqual(
+            193, fishing["day_5_fishing_households_from_day_2"]
+        )
+        self.assertEqual(238, fishing["exited_both_days_households"])
+        self.assertEqual(
+            fishing["day_2_fishing_households"] * 2,
+            sum(fishing["exit_daily_classification"].values()),
+        )
+        self.assertEqual(
+            fishing["exited_both_days_households"],
+            sum(fishing["exit_cohort_classification"].values()),
+        )
+        self.assertEqual(
+            1,
+            fishing[
+                "exit_cohort_household_days_with_positive_fish_stock"
+            ],
+        )
+        self.assertGreater(
+            fishing["exit_daily_classification"].get(
+                "known_fish_cells_depleted", 0
+            ),
+            0,
+        )
+        fish_activity = fishing[
+            "resource_activity_shift_per_exiting_household"
+        ]["day_2_fish"]
+        self.assertGreater(fish_activity["harvest_hours"], 0.0)
+        self.assertGreater(fish_activity["stock_kg_removed"], 0.0)
+        concentration = fishing["fish_selected_cells_by_day"]
+        self.assertLess(
+            concentration["5"]["distinct_selected_cells"],
+            concentration["2"]["distinct_selected_cells"],
+        )
+        self.assertGreater(
+            concentration["5"]["largest_cell_households"], 0
+        )
+        self.assertTrue(fishing["representative_exits"])
+        for item in fishing["representative_exits"]:
+            for day in item["daily"]:
+                if day["day"] in (4, 5):
+                    self.assertNotIn(
+                        "fish", day["selected_resources"]
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

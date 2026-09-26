@@ -18,7 +18,7 @@ from plain_life.integration import (
 
 
 def main() -> int:
-    version = sys.argv[1] if len(sys.argv) > 1 else "v4"
+    version = sys.argv[1] if len(sys.argv) > 1 else "v5"
     result = run_seven_day_integration(ROOT, version=version)
     docs_path = (
         ROOT

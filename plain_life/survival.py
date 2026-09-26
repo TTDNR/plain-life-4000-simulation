@@ -2534,7 +2534,34 @@ def _harvest_food(
     food_obstacles: dict[str, int],
     food_path_records: list[dict[str, Any]] | None,
 ) -> tuple[float, float]:
-    if hours <= 0.0 or target_kcal <= 0.0:
+    if target_kcal <= 0.0:
+        return 0.0, 0.0
+    if hours <= 0.0:
+        if food_path_records is not None:
+            food_path_records.append(
+                {
+                    "day": world.elapsed_days,
+                    "day_of_year": world.day_of_year,
+                    "household_id": runtime.household_id,
+                    "camp_cell_index": runtime.camp_cell_index,
+                    "known_resources": {},
+                    "selected_resources": [],
+                    "selected_cells": [],
+                    "decision_reasons": {"no_labour_time": 1},
+                    "rejected_resource_cells": [],
+                    "rejection_summary": {},
+                    "candidate_summary": {},
+                    "resource_activity": {},
+                    "scan_stopped_reason": "no_available_hours",
+                    "hours_available": 0.0,
+                    "hours_used": 0.0,
+                    "potential_hours": runtime.last_potential_hours,
+                    "care_hours": runtime.last_care_hours,
+                    "work_capacity_multiplier": (
+                        runtime.work_capacity_multiplier
+                    ),
+                }
+            )
         return 0.0, 0.0
     acquired = 0.0
     selected_resource: str | None = None
@@ -2542,7 +2569,37 @@ def _harvest_food(
     selected_cells: list[int] = []
     known_resources: dict[str, float] = defaultdict(float)
     decision_reasons: dict[str, int] = defaultdict(int)
+    rejected_resource_cells: list[dict[str, Any]] = []
+    rejection_summary: dict[str, dict[str, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
+    season_rejection_counts: dict[str, int] = defaultdict(int)
+    rejection_sample_counts: dict[tuple[str, str], int] = defaultdict(int)
+    candidate_summary: dict[str, dict[str, float | int]] = defaultdict(
+        lambda: {
+            "examined_candidates": 0,
+            "available_stock_cells": 0,
+            "available_stock_kg": 0.0,
+            "selected_stock_kg": 0.0,
+            "selected_edible_kg": 0.0,
+            "processing_failures": 0,
+        }
+    )
+    resource_activity: dict[str, dict[str, float | int]] = defaultdict(
+        lambda: {
+            "cells_selected": 0,
+            "stock_kg_removed": 0.0,
+            "edible_food_kg": 0.0,
+            "edible_kcal": 0.0,
+            "harvest_hours": 0.0,
+            "processing_hours": 0.0,
+            "travel_hours": 0.0,
+            "processing_attempts": 0,
+            "processing_failures": 0,
+        }
+    )
     remaining_hours = hours
+    scan_stopped_reason = "all_candidates_examined"
     for resource_id, cell_index, _, _ in runtime.supply_options:
         if not world.is_available(resource_id):
             continue
@@ -2553,16 +2610,85 @@ def _harvest_food(
             world, resource_id, cell_index
         )
     for resource_id, cell_index, _, distance_km in runtime.supply_options:
-        if remaining_hours <= 0.02 or acquired >= target_kcal:
+        if remaining_hours <= 0.02:
+            scan_stopped_reason = "no_remaining_hours"
+            break
+        if acquired >= target_kcal:
+            scan_stopped_reason = "target_reached"
             break
         spec = world.resource_spec(resource_id)
+        candidate_summary[resource_id]["examined_candidates"] = (
+            int(candidate_summary[resource_id]["examined_candidates"]) + 1
+        )
         if not world.is_available(resource_id):
             food_obstacles["not_mature_or_out_of_season"] += 1
             decision_reasons["not_mature_or_out_of_season"] += 1
+            rejection_summary[resource_id][
+                "outside_availability_window"
+            ] += 1
+            candidate_summary[resource_id][
+                "outside_availability_window"
+            ] = (
+                int(
+                    candidate_summary[resource_id].get(
+                        "outside_availability_window", 0
+                    )
+                )
+                + 1
+            )
+            season_rejection_counts[
+                f"{resource_id}:{world.day_of_year}"
+            ] += 1
+            if rejection_sample_counts[
+                (resource_id, "outside_availability_window")
+            ] < 3:
+                rejection_sample_counts[
+                    (resource_id, "outside_availability_window")
+                ] += 1
+                season_start, season_end = spec["availability_day_range"]
+                rejected_resource_cells.append(
+                    {
+                        "resource_id": resource_id,
+                        "cell_index": cell_index,
+                        "day_of_year": world.day_of_year,
+                        "availability_day_range": [
+                            season_start,
+                            season_end,
+                        ],
+                        "reason": "outside_availability_window",
+                    }
+                )
             continue
         if not _can_harvest_by_member(spec, runtime):
             food_obstacles["no_household_member_with_knowledge"] += 1
             decision_reasons["no_household_member_with_knowledge"] += 1
+            rejection_summary[resource_id][
+                "no_household_member_with_knowledge"
+            ] += 1
+            candidate_summary[resource_id][
+                "no_household_member_with_knowledge"
+            ] = (
+                int(
+                    candidate_summary[resource_id].get(
+                        "no_household_member_with_knowledge", 0
+                    )
+                )
+                + 1
+            )
+            if rejection_sample_counts[
+                (resource_id, "no_household_member_with_knowledge")
+            ] < 3:
+                rejection_sample_counts[
+                    (resource_id, "no_household_member_with_knowledge")
+                ] += 1
+                rejected_resource_cells.append(
+                    {
+                        "resource_id": resource_id,
+                        "cell_index": cell_index,
+                        "day_of_year": world.day_of_year,
+                        "reason": "no_household_member_with_knowledge",
+                    }
+                )
             continue
         if resource_id in world.plant_stock_kg:
             stock = world.plant_stock_kg[resource_id][cell_index]
@@ -2571,12 +2697,64 @@ def _harvest_food(
         if stock <= 0.001:
             food_obstacles["local_stock_depleted"] += 1
             decision_reasons["local_stock_depleted"] += 1
+            rejection_summary[resource_id]["local_stock_depleted"] += 1
+            candidate_summary[resource_id]["local_stock_depleted"] = (
+                int(
+                    candidate_summary[resource_id].get(
+                        "local_stock_depleted", 0
+                    )
+                )
+                + 1
+            )
+            if rejection_sample_counts[
+                (resource_id, "local_stock_depleted")
+            ] < 3:
+                rejection_sample_counts[
+                    (resource_id, "local_stock_depleted")
+                ] += 1
+                rejected_resource_cells.append(
+                    {
+                        "resource_id": resource_id,
+                        "cell_index": cell_index,
+                        "day_of_year": world.day_of_year,
+                        "reason": "local_stock_depleted",
+                    }
+                )
             continue
+        candidate_summary[resource_id]["available_stock_cells"] = (
+            int(candidate_summary[resource_id]["available_stock_cells"]) + 1
+        )
+        candidate_summary[resource_id]["available_stock_kg"] = (
+            float(candidate_summary[resource_id]["available_stock_kg"]) + stock
+        )
         travel_hours = _distance_walk_hours(distance_km)
         effective_hours = remaining_hours - travel_hours
         if effective_hours <= 0.02:
             food_obstacles["no_time_after_travel"] += 1
             decision_reasons["no_time_after_travel"] += 1
+            rejection_summary[resource_id]["no_time_after_travel"] += 1
+            candidate_summary[resource_id]["no_time_after_travel"] = (
+                int(
+                    candidate_summary[resource_id].get(
+                        "no_time_after_travel", 0
+                    )
+                )
+                + 1
+            )
+            if rejection_sample_counts[
+                (resource_id, "no_time_after_travel")
+            ] < 3:
+                rejection_sample_counts[
+                    (resource_id, "no_time_after_travel")
+                ] += 1
+                rejected_resource_cells.append(
+                    {
+                        "resource_id": resource_id,
+                        "cell_index": cell_index,
+                        "day_of_year": world.day_of_year,
+                        "reason": "no_time_after_travel",
+                    }
+                )
             continue
         edible_yield = float(spec.get("edible_yield_fraction", 1.0))
         if edible_yield <= 0.0:
@@ -2628,6 +2806,10 @@ def _harvest_food(
             details["processing_failures"] += 1
             food_obstacles["processing_failed"] += 1
             decision_reasons["processing_failed"] += 1
+            rejection_summary[resource_id]["processing_failed"] += 1
+            candidate_summary[resource_id]["processing_failures"] = (
+                int(candidate_summary[resource_id]["processing_failures"]) + 1
+            )
         runtime.food_store_kg[resource_id] = (
             runtime.food_store_kg.get(resource_id, 0.0) + edible_kg
         )
@@ -2650,9 +2832,53 @@ def _harvest_food(
         time_account["food_harvest"] += harvest_hours
         time_account["food_processing"] += processing_hours
         time_account["food_travel"] += travel_hours
+        candidate_summary[resource_id]["selected_stock_kg"] = (
+            float(candidate_summary[resource_id]["selected_stock_kg"])
+            + stock_kg
+        )
+        candidate_summary[resource_id]["selected_edible_kg"] = (
+            float(candidate_summary[resource_id]["selected_edible_kg"])
+            + edible_kg
+        )
+        resource_activity[resource_id]["cells_selected"] = (
+            int(resource_activity[resource_id]["cells_selected"]) + 1
+        )
+        resource_activity[resource_id]["stock_kg_removed"] = (
+            float(resource_activity[resource_id]["stock_kg_removed"])
+            + stock_kg
+        )
+        resource_activity[resource_id]["edible_food_kg"] = (
+            float(resource_activity[resource_id]["edible_food_kg"])
+            + edible_kg
+        )
+        resource_activity[resource_id]["edible_kcal"] = (
+            float(resource_activity[resource_id]["edible_kcal"])
+            + edible_kg * float(spec["kcal_per_kg"])
+        )
+        resource_activity[resource_id]["harvest_hours"] = (
+            float(resource_activity[resource_id]["harvest_hours"])
+            + harvest_hours
+        )
+        resource_activity[resource_id]["processing_hours"] = (
+            float(resource_activity[resource_id]["processing_hours"])
+            + processing_hours
+        )
+        resource_activity[resource_id]["travel_hours"] = (
+            float(resource_activity[resource_id]["travel_hours"])
+            + travel_hours
+        )
+        resource_activity[resource_id]["processing_attempts"] = (
+            int(resource_activity[resource_id]["processing_attempts"]) + 1
+        )
+        if edible_kg <= 0.0:
+            resource_activity[resource_id]["processing_failures"] = (
+                int(resource_activity[resource_id]["processing_failures"])
+                + 1
+            )
         daily_harvest_details.append(
             {
                 "day": world.elapsed_days,
+                "day_of_year": world.day_of_year,
                 "household_id": runtime.household_id,
                 "resource_id": resource_id,
                 "cell_index": cell_index,
@@ -2672,6 +2898,7 @@ def _harvest_food(
         food_path_records.append(
             {
                 "day": world.elapsed_days,
+                "day_of_year": world.day_of_year,
                 "household_id": runtime.household_id,
                 "camp_cell_index": runtime.camp_cell_index,
                 "known_resources": {
@@ -2681,8 +2908,50 @@ def _harvest_food(
                 "selected_resources": selected_resources,
                 "selected_cells": selected_cells,
                 "decision_reasons": dict(sorted(decision_reasons.items())),
+                "rejected_resource_cells": rejected_resource_cells,
+                "rejection_summary": {
+                    resource_id: dict(sorted(reasons.items()))
+                    for resource_id, reasons in sorted(
+                        rejection_summary.items()
+                    )
+                },
+                "candidate_summary": {
+                    resource_id: {
+                        key: (
+                            round(value, 6)
+                            if isinstance(value, float)
+                            else value
+                        )
+                        for key, value in sorted(summary.items())
+                    }
+                    for resource_id, summary in sorted(
+                        candidate_summary.items()
+                    )
+                },
+                "resource_activity": {
+                    resource_id: {
+                        key: (
+                            round(value, 6)
+                            if isinstance(value, float)
+                            else value
+                        )
+                        for key, value in sorted(activity.items())
+                    }
+                    for resource_id, activity in sorted(
+                        resource_activity.items()
+                    )
+                },
+                "season_rejection_counts": dict(
+                    sorted(season_rejection_counts.items())
+                ),
+                "scan_stopped_reason": scan_stopped_reason,
+                "target_kcal": round(target_kcal, 3),
+                "acquired_kcal": round(acquired, 3),
                 "hours_available": round(hours, 4),
                 "hours_used": round(hours - remaining_hours, 4),
+                "potential_hours": runtime.last_potential_hours,
+                "care_hours": runtime.last_care_hours,
+                "work_capacity_multiplier": runtime.work_capacity_multiplier,
             }
         )
     return acquired, hours - remaining_hours
