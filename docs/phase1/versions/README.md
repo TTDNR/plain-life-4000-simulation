@@ -81,3 +81,13 @@ v1 的“自然再生量可能支持长期生存”判断已被撤销。该判�
 - [v5 开局相容性评估](v5/COMPATIBILITY_ASSESSMENT.md)
 - [v5 变更记录](v5/CHANGES.md)
 - [v5 审计](v5/PHASE1_AUDIT.md)
+
+## v6
+
+状态：空间发现与完整信息诊断版；正式长期模拟仍暂停。
+
+- [v6 状态](v6/PHASE1_STATUS.md)
+- [空间发现与信息对照诊断](v6/SPATIAL_ACCESS_DIAGNOSTIC.md)
+- [v6 七天整合诊断](v6/SEVEN_DAY_INTEGRATION.md)
+- [v6 变更记录](v6/CHANGES.md)
+- [v6 审计](v6/PHASE1_AUDIT.md)

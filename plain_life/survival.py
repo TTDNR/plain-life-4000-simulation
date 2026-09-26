@@ -145,6 +145,8 @@ class HouseholdRuntime:
     social_travel_debt_hours: float = 0.0
     shelter_guest_capacity_used: int = 0
     pending_food_promises: list[dict[str, Any]] = field(default_factory=list)
+    supply_information_mode: str = "candidate_limited"
+    migration_history: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def skills(self) -> set[str]:
@@ -181,6 +183,8 @@ class SurvivalRunResult:
     daily_harvest_details: list[dict[str, float | str]]
     resource_consumption_kg: dict[str, float]
     migration_summary: dict[str, Any]
+    migration_records: list[dict[str, Any]]
+    spatial_learning_records: list[dict[str, Any]]
     final_resource_stock_kg: dict[str, float]
 
     def summary(self) -> dict[str, Any]:
@@ -208,6 +212,8 @@ class SurvivalRunResult:
             "daily_harvest_details": self.daily_harvest_details,
             "resource_consumption_kg": self.resource_consumption_kg,
             "migration_summary": self.migration_summary,
+            "migration_records": self.migration_records,
+            "spatial_learning_records": self.spatial_learning_records,
             "final_resource_stock_kg": self.final_resource_stock_kg,
         }
 
@@ -220,11 +226,21 @@ def run_survival_validation(
     record_household_trace: bool = False,
     enable_social_exchange: bool = False,
     apply_body_feedback: bool = True,
+    supply_information_mode: str = "candidate_limited",
 ) -> SurvivalRunResult:
+    if supply_information_mode not in {
+        "candidate_limited",
+        "complete_resource_positions",
+    }:
+        raise ValueError(
+            f"unsupported supply information mode: {supply_information_mode}"
+        )
     world = initial_world.clone()
     start_fingerprint = initial_world.initial_fingerprint
     initial_world_changed_before_run = world.fingerprint() != start_fingerprint
-    supply_cache: dict[int, list[tuple[str, int, float, float]]] = {}
+    supply_cache: dict[
+        tuple[int, str], list[tuple[str, int, float, float]]
+    ] = {}
     material_cache: dict[int, dict[str, list[int]]] = {}
     water_distance_cache: dict[int, float] = {}
     camp_score_cache: dict[int, float] = {}
@@ -235,6 +251,7 @@ def run_survival_validation(
         material_cache,
         water_distance_cache,
         camp_score_cache,
+        supply_information_mode,
     )
     if behavior_states:
         for runtime in runtimes.values():
@@ -272,6 +289,8 @@ def run_survival_validation(
     social_action_stats = _empty_social_stats()
     person_food_records: list[dict[str, Any]] = []
     food_path_records: list[dict[str, Any]] = []
+    spatial_learning_records: list[dict[str, Any]] = []
+    migration_records: list[dict[str, Any]] = []
     camps_after_day_one_selection: set[int] = set()
 
     for day in range(1, days + 1):
@@ -286,6 +305,9 @@ def run_survival_validation(
             material_cache,
             water_distance_cache,
             camp_score_cache,
+            supply_information_mode,
+            spatial_learning_records,
+            migration_records,
         )
         if day == 1:
             camps_after_day_one_selection = {
@@ -306,6 +328,7 @@ def run_survival_validation(
             household_daily_records if record_household_trace else None,
             person_daily_records if record_household_trace else None,
             food_path_records if record_household_trace else None,
+            supply_information_mode,
         )
         metrics.append(day_metric)
         if enable_social_exchange:
@@ -369,6 +392,7 @@ def run_survival_validation(
             {runtime.camp_cell_index for runtime in runtimes.values()}
         ),
         "known_cell_radius_km_end": round(_exploration_radius_km(days), 3),
+        "supply_information_mode": supply_information_mode,
     }
     final_stock = {
         resource_id: round(sum(values), 3)
@@ -416,6 +440,8 @@ def run_survival_validation(
             for key, value in sorted(resource_consumption.items())
         },
         migration_summary=migration_summary,
+        migration_records=migration_records,
+        spatial_learning_records=spatial_learning_records,
         final_resource_stock_kg=final_stock,
     )
 
@@ -429,10 +455,13 @@ def _advance_day(world: WorldState) -> dict[str, float]:
 def _initialize_household_runtimes(
     world: WorldState,
     population: PopulationState,
-    supply_cache: dict[int, list[tuple[str, int, float, float]]],
+    supply_cache: dict[
+        tuple[int, str], list[tuple[str, int, float, float]]
+    ],
     material_cache: dict[int, dict[str, list[int]]],
     water_distance_cache: dict[int, float],
     camp_score_cache: dict[int, float],
+    supply_information_mode: str,
 ) -> dict[str, HouseholdRuntime]:
     drop_index = world.drop_point.index
     runtimes: dict[str, HouseholdRuntime] = {}
@@ -442,10 +471,13 @@ def _initialize_household_runtimes(
         world, drop_index
     )
     camp_score_cache[drop_index] = _camp_score(world, drop_index)
-    supply_options = supply_cache.get(drop_index)
+    supply_cache_key = (drop_index, supply_information_mode)
+    supply_options = supply_cache.get(supply_cache_key)
     if supply_options is None:
-        supply_options = _build_supply_options(world, drop_index)
-        supply_cache[drop_index] = supply_options
+        supply_options = _build_supply_options(
+            world, drop_index, supply_information_mode
+        )
+        supply_cache[supply_cache_key] = supply_options
     material_options = material_cache.get(drop_index)
     if material_options is None:
         material_options = _build_material_options(world, drop_index)
@@ -463,6 +495,7 @@ def _initialize_household_runtimes(
                 person.id: {drop_index} for person in members
             },
             nearest_water_cell_index=_nearest_water_cell_index(world, drop_index),
+            supply_information_mode=supply_information_mode,
         )
     return runtimes
 
@@ -471,19 +504,37 @@ def _prepare_household_runtimes(
     world: WorldState,
     runtimes: dict[str, HouseholdRuntime],
     day: int,
-    supply_cache: dict[int, list[tuple[str, int, float, float]]],
+    supply_cache: dict[
+        tuple[int, str], list[tuple[str, int, float, float]]
+    ],
     material_cache: dict[int, dict[str, list[int]]],
     water_distance_cache: dict[int, float],
     camp_score_cache: dict[int, float],
+    supply_information_mode: str,
+    spatial_learning_records: list[dict[str, Any]],
+    migration_records: list[dict[str, Any]],
 ) -> None:
     radius_km = _exploration_radius_km(day)
     drop_index = world.drop_point.index
-    explored_cells = [
-        cell.index
-        for cell in world.cells
-        if cell.habitable
-        and _distance_km(world, drop_index, cell.index) <= radius_km
+    complete_information = (
+        supply_information_mode == "complete_resource_positions"
+    )
+    habitable_cells = [
+        cell.index for cell in world.cells if cell.habitable
     ]
+    full_candidate_cells = (
+        habitable_cells if complete_information else None
+    )
+    explored_cells = (
+        habitable_cells
+        if complete_information
+        else [
+            cell.index
+            for cell in world.cells
+            if cell.habitable
+            and _distance_km(world, drop_index, cell.index) <= radius_km
+        ]
+    )
     for index in explored_cells:
         camp_score_cache.setdefault(index, _camp_score(world, index))
     dynamic_camp_scores = {
@@ -495,16 +546,38 @@ def _prepare_household_runtimes(
         occupancy[runtime.camp_cell_index] = (
             occupancy.get(runtime.camp_cell_index, 0) + 1
         )
+    fish_supply_cache: dict[
+        tuple[int, str], dict[str, float | int | None]
+    ] = {}
+
+    def _cached_fish_supply(
+        camp_cell_index: int,
+        supply_options: list[tuple[str, int, float, float]],
+    ) -> dict[str, float | int | None]:
+        key = (camp_cell_index, supply_information_mode)
+        if key not in fish_supply_cache:
+            fish_supply_cache[key] = _resource_supply_status(
+                world, supply_options, "fish"
+            )
+        return fish_supply_cache[key]
 
     should_consider_migration = day == 1 or day % 5 == 0
     for runtime in runtimes.values():
         direct_observation = _nearby_habitable_indices(
             world, runtime.camp_cell_index, 1
         )
+        direct_new_cells = 0
         for person in runtime.members:
+            before_direct = len(runtime.person_known_cells[person.id])
             runtime.person_known_cells[person.id].update(
                 direct_observation
             )
+            direct_new_cells += max(
+                0,
+                len(runtime.person_known_cells[person.id])
+                - before_direct,
+            )
+        scout_new_cells = 0
         scout = _choose_explorer(runtime)
         if scout is not None:
             explored = _nearby_habitable_indices(
@@ -512,7 +585,10 @@ def _prepare_household_runtimes(
             )
             before = set(runtime.person_known_cells[scout.id])
             runtime.person_known_cells[scout.id].update(explored)
-            if len(runtime.person_known_cells[scout.id]) > len(before):
+            scout_new_cells = (
+                len(runtime.person_known_cells[scout.id]) - len(before)
+            )
+            if scout_new_cells > 0:
                 runtime.knowledge_sharing_hours += 0.5 + 0.1 * max(
                     0, len(runtime.members) - 1
                 )
@@ -521,7 +597,23 @@ def _prepare_household_runtimes(
             for known_cells in runtime.person_known_cells.values()
             for cell_index in known_cells
         }
-        candidate_cells = sorted(runtime.known_cells)
+        candidate_cells = (
+            full_candidate_cells
+            if full_candidate_cells is not None
+            else sorted(runtime.known_cells)
+        )
+        migration_blocked_reason = (
+            "migration_considered"
+            if should_consider_migration
+            else "migration_not_scheduled"
+        )
+        migrated = False
+        previous_camp = runtime.camp_cell_index
+        migration_distance_km = 0.0
+        migration_hours = 0.0
+        old_fish_supply = _cached_fish_supply(
+            runtime.camp_cell_index, runtime.supply_options
+        )
         if should_consider_migration:
             recent_ratio = runtime.last_food_ratio
             current_water_distance = _cached_water_distance(
@@ -541,7 +633,13 @@ def _prepare_household_runtimes(
             cooldown_elapsed = (
                 day == 1 or day - runtime.last_migration_day >= 7
             )
-            if needs_move and cooldown_elapsed and candidate_cells:
+            if not needs_move:
+                migration_blocked_reason = "no_migration_trigger"
+            elif not cooldown_elapsed:
+                migration_blocked_reason = "migration_cooldown"
+            elif not candidate_cells:
+                migration_blocked_reason = "no_known_candidate_camp"
+            else:
                 best = max(
                     candidate_cells,
                     key=lambda index: (
@@ -558,7 +656,7 @@ def _prepare_household_runtimes(
                     current_food_score
                     + camp_score_cache[runtime.camp_cell_index] * 0.2
                 )
-                if (
+                can_migrate = (
                     best != runtime.camp_cell_index
                     and (
                         day == 1
@@ -566,16 +664,16 @@ def _prepare_household_runtimes(
                         or world.cells[runtime.camp_cell_index].flood_risk > 0.55
                         or best_score > current_score * 1.2 + 0.5
                     )
-                ):
+                )
+                if can_migrate:
                     occupancy[runtime.camp_cell_index] = max(
                         0, occupancy[runtime.camp_cell_index] - 1
                     )
                     occupancy[best] = occupancy.get(best, 0) + 1
-                    migration_hours = (
-                        _distance_km(world, runtime.camp_cell_index, best)
-                        * 2.0
-                        / 4.5
+                    migration_distance_km = _distance_km(
+                        world, runtime.camp_cell_index, best
                     )
+                    migration_hours = migration_distance_km * 2.0 / 4.5
                     runtime.camp_cell_index = best
                     runtime.nearest_water_cell_index = (
                         _nearest_water_cell_index(world, best)
@@ -583,16 +681,69 @@ def _prepare_household_runtimes(
                     runtime.migrations += 1
                     runtime.last_migration_day = day
                     runtime.migration_travel_debt_hours += migration_hours
-                    supply_options = supply_cache.get(best)
+                    supply_cache_key = (
+                        best,
+                        supply_information_mode,
+                    )
+                    supply_options = supply_cache.get(supply_cache_key)
                     if supply_options is None:
-                        supply_options = _build_supply_options(world, best)
-                        supply_cache[best] = supply_options
+                        supply_options = _build_supply_options(
+                            world, best, supply_information_mode
+                        )
+                        supply_cache[supply_cache_key] = supply_options
                     material_options = material_cache.get(best)
                     if material_options is None:
                         material_options = _build_material_options(world, best)
                         material_cache[best] = material_options
                     runtime.supply_options = supply_options
                     runtime.material_options = material_options
+                    migrated = True
+                    migration_blocked_reason = "migrated"
+                else:
+                    migration_blocked_reason = "stay_selected_by_rule"
+        new_fish_supply = _cached_fish_supply(
+            runtime.camp_cell_index, runtime.supply_options
+        )
+        if migrated:
+            migration_event = {
+                "day": day,
+                "household_id": runtime.household_id,
+                "from_cell": previous_camp,
+                "to_cell": runtime.camp_cell_index,
+                "distance_km": round(migration_distance_km, 6),
+                "travel_hours": round(migration_hours, 6),
+                "reason": (
+                    "initial_location_choice"
+                    if day == 1
+                    else "food_or_site_trigger"
+                ),
+                "old_fish_supply": old_fish_supply,
+                "new_fish_supply": new_fish_supply,
+                "known_cells": len(runtime.known_cells),
+                "candidate_migration_cells": len(candidate_cells),
+            }
+            runtime.migration_history.append(migration_event)
+            migration_records.append(migration_event)
+        spatial_learning_records.append(
+            {
+                "day": day,
+                "household_id": runtime.household_id,
+                "mode": supply_information_mode,
+                "camp_cell_index": runtime.camp_cell_index,
+                "direct_new_cells": direct_new_cells,
+                "scout_new_cells": scout_new_cells,
+                "known_cells": len(runtime.known_cells),
+                "candidate_migration_cells": len(candidate_cells),
+                "migration_considered": should_consider_migration,
+                "migration_blocked_reason": migration_blocked_reason,
+                "migrated": migrated,
+                "migration_distance_km": round(
+                    migration_distance_km, 6
+                ),
+                "supply_candidates": len(runtime.supply_options),
+                "fish_supply": new_fish_supply,
+            }
+        )
 
 
 def _simulate_day(
@@ -610,6 +761,7 @@ def _simulate_day(
     household_daily_records: list[dict[str, Any]] | None,
     person_daily_records: list[dict[str, Any]] | None,
     food_path_records: list[dict[str, Any]] | None,
+    supply_information_mode: str,
 ) -> DayMetric:
     food_demand = 0.0
     food_acquired = 0.0
@@ -632,6 +784,19 @@ def _simulate_day(
     daily_harvest_start = len(daily_harvest_details)
     food_obstacles: dict[str, int] = defaultdict(int)
     food_resource_switches = 0
+    complete_information = (
+        supply_information_mode == "complete_resource_positions"
+    )
+    global_resource_kcal_totals = (
+        _global_resource_kcal_totals(world)
+        if complete_information
+        else None
+    )
+    global_known_food_cells = (
+        _global_known_food_cells(world)
+        if complete_information
+        else None
+    )
     household_order = sorted(
         runtimes,
         key=lambda household_id: (
@@ -643,12 +808,24 @@ def _simulate_day(
     for household_id in household_order:
         runtime = runtimes[household_id]
         household_category_hours: dict[str, float] = defaultdict(float)
-        household_known_food_kcal_sum += _known_available_food_kcal(
-            world, runtime
-        )
-        distinct_known_food_cells.update(
-            _known_food_cells(world, runtime)
-        )
+        if global_resource_kcal_totals is None:
+            household_known_food_kcal_sum += _known_available_food_kcal(
+                world, runtime
+            )
+            distinct_known_food_cells.update(
+                _known_food_cells(world, runtime)
+            )
+        else:
+            household_known_food_kcal_sum += (
+                _known_resource_kcal_for_runtime(
+                    world,
+                    runtime,
+                    global_resource_kcal_totals,
+                )
+            )
+            distinct_known_food_cells.update(
+                global_known_food_cells or set()
+            )
         demand = sum(_daily_kcal_need(person) for person in runtime.members)
         litres = (
             len(runtime.members)
@@ -809,6 +986,7 @@ def _simulate_day(
             time_account,
             food_obstacles,
             food_path_records,
+            global_resource_kcal_totals,
         )
         hours -= food_hours_used
         if (
@@ -2533,6 +2711,7 @@ def _harvest_food(
     time_account: dict[str, float],
     food_obstacles: dict[str, int],
     food_path_records: list[dict[str, Any]] | None,
+    global_resource_kcal_totals: dict[str, float] | None = None,
 ) -> tuple[float, float]:
     if target_kcal <= 0.0:
         return 0.0, 0.0
@@ -2600,15 +2779,24 @@ def _harvest_food(
     )
     remaining_hours = hours
     scan_stopped_reason = "all_candidates_examined"
-    for resource_id, cell_index, _, _ in runtime.supply_options:
-        if not world.is_available(resource_id):
-            continue
-        spec = world.resource_spec(resource_id)
-        if not _can_harvest_by_member(spec, runtime):
-            continue
-        known_resources[resource_id] += _available_stock_kcal(
-            world, resource_id, cell_index
-        )
+    if global_resource_kcal_totals is None:
+        for resource_id, cell_index, _, _ in runtime.supply_options:
+            if not world.is_available(resource_id):
+                continue
+            spec = world.resource_spec(resource_id)
+            if not _can_harvest_by_member(spec, runtime):
+                continue
+            known_resources[resource_id] += _available_stock_kcal(
+                world, resource_id, cell_index
+            )
+    else:
+        for resource_id, total_kcal in global_resource_kcal_totals.items():
+            if not world.is_available(resource_id):
+                continue
+            spec = world.resource_spec(resource_id)
+            if not _can_harvest_by_member(spec, runtime):
+                continue
+            known_resources[resource_id] = total_kcal
     for resource_id, cell_index, _, distance_km in runtime.supply_options:
         if remaining_hours <= 0.02:
             scan_stopped_reason = "no_remaining_hours"
@@ -3064,6 +3252,59 @@ def _known_available_food_kcal(
     )
 
 
+def _global_resource_kcal_totals(
+    world: WorldState,
+) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for resource_id, spec in world.baseline.resource_specs.items():
+        stock = (
+            world.plant_stock_kg[resource_id]
+            if resource_id in world.plant_stock_kg
+            else world.animal_stock_kg[resource_id]
+        )
+        totals[resource_id] = (
+            sum(stock)
+            * float(spec.get("edible_yield_fraction", 1.0))
+            * float(spec["kcal_per_kg"])
+        )
+    return totals
+
+
+def _global_known_food_cells(
+    world: WorldState,
+) -> set[tuple[str, int]]:
+    cells: set[tuple[str, int]] = set()
+    for resource_id, spec in world.baseline.resource_specs.items():
+        if not world.is_available(resource_id):
+            continue
+        stock = (
+            world.plant_stock_kg[resource_id]
+            if resource_id in world.plant_stock_kg
+            else world.animal_stock_kg[resource_id]
+        )
+        cells.update(
+            (resource_id, cell_index)
+            for cell_index, value in enumerate(stock)
+            if value > 0.001
+        )
+    return cells
+
+
+def _known_resource_kcal_for_runtime(
+    world: WorldState,
+    runtime: HouseholdRuntime,
+    totals: dict[str, float],
+) -> float:
+    return sum(
+        total
+        for resource_id, total in totals.items()
+        if world.is_available(resource_id)
+        and _can_harvest_by_member(
+            world.resource_spec(resource_id), runtime
+        )
+    )
+
+
 def _known_food_cells(
     world: WorldState,
     runtime: HouseholdRuntime,
@@ -3153,12 +3394,16 @@ def _choose_vessel_maker(
 def _build_supply_options(
     world: WorldState,
     camp_cell_index: int,
+    supply_information_mode: str = "candidate_limited",
 ) -> list[tuple[str, int, float, float]]:
+    complete_information = (
+        supply_information_mode == "complete_resource_positions"
+    )
     candidates: list[tuple[str, int, float, float]] = []
     camp = world.cells[camp_cell_index]
     for cell in world.cells:
         distance = _distance_km(world, camp_cell_index, cell.index)
-        if distance > 4.0:
+        if not complete_information and distance > 4.0:
             continue
         for resource_id, spec in world.baseline.resource_specs.items():
             if cell.land_class not in spec["habitats"]:
@@ -3184,9 +3429,49 @@ def _build_supply_options(
     selected: list[tuple[str, int, float, float]] = []
     for resource_candidates in by_resource.values():
         resource_candidates.sort(key=lambda item: item[2], reverse=True)
-        selected.extend(resource_candidates[:40])
+        selected.extend(
+            resource_candidates
+            if complete_information
+            else resource_candidates[:40]
+        )
     selected.sort(key=lambda item: item[2], reverse=True)
     return selected
+
+
+def _resource_supply_status(
+    world: WorldState,
+    supply_options: list[tuple[str, int, float, float]],
+    resource_id: str,
+) -> dict[str, float | int]:
+    matching = [
+        (cell_index, distance)
+        for option_resource_id, cell_index, _, distance in supply_options
+        if option_resource_id == resource_id
+    ]
+    if resource_id in world.plant_stock_kg:
+        stock = world.plant_stock_kg[resource_id]
+    else:
+        stock = world.animal_stock_kg[resource_id]
+    positive = [
+        (cell_index, stock[cell_index], distance)
+        for cell_index, distance in matching
+        if stock[cell_index] > 0.001
+    ]
+    return {
+        "candidates": len(matching),
+        "positive_cells": len(positive),
+        "stock_kg": round(sum(item[1] for item in positive), 6),
+        "nearest_positive_km": (
+            round(min(item[2] for item in positive), 6)
+            if positive
+            else None
+        ),
+        "farthest_positive_km": (
+            round(max(item[2] for item in positive), 6)
+            if positive
+            else None
+        ),
+    }
 
 
 def _build_material_options(

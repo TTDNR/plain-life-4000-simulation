@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "target_total": 4000,
+  "snapshot": {
+    "status": "unresolved",
+    "people": [],
+    "households": [],
+    "kinship_edges": [],
+    "pregnancy_events": [],
+    "lactation_links": []
+  },
+  "constraints": {
+    "age_kinship_fertility_and_memory_consistent": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-5"]
+    },
+    "infants_have_caregivers": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-5"]
+    },
+    "pregnancies_lactation_and_infants_reconciled": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-5"]
+    },
+    "skills_have_learning_and_practice_history": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-5"]
+    },
+    "households_can_contain_dependence_conflict_and_inequality": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-5"]
+    },
+    "households_are_not_forced_to_cooperate": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-5"]
+    },
+    "preexisting_private_ties_between_households": {
+      "status": "known",
+      "value": "none",
+      "evidence": ["REQ-5"]
+    },
+    "shared_origin_language_and_customs_can_seed_trust": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-5"]
+    },
+    "old_property_and_office_transfer": {
+      "status": "known",
+      "value": "none",
+      "evidence": ["REQ-5"]
+    },
+    "critical_craft_person_coverage": {
+      "status": "known",
+      "value": "not artificially completed or inherited",
+      "evidence": ["REQ-5"]
+    }
+  },
+  "settlement_constraints": {
+    "single_initial_drop_point": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-6"]
+    },
+    "preassigned_groups": {
+      "status": "known",
+      "value": "none",
+      "evidence": ["REQ-6"]
+    },
+    "exploration_shares_map_globally": {
+      "status": "known",
+      "value": false,
+      "evidence": ["REQ-6"]
+    },
+    "new_dwelling_immediately_creates_polity": {
+      "status": "known",
+      "value": false,
+      "evidence": ["REQ-6"]
+    },
+    "settlement_identity_and_political_units_may_diverge": {
+      "status": "known",
+      "value": true,
+      "evidence": ["REQ-6"]
+    },
+    "stay_or_leave_decision": {
+      "status": "known",
+      "value": "emergent from individual and household assessment of benefits, costs, information, and risk",
+      "evidence": ["REQ-6"]
+    }
+  },
+  "ecology_link": {
+    "status": "unresolved",
+    "aggregate_population_target": null,
+    "household_capability_distribution": null,
+    "care_load": null,
+    "labor_time_available": null,
+    "food_and_water_access_by_household": null,
+    "evidence": []
+  }
+}

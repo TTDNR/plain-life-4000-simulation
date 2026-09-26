@@ -18,7 +18,7 @@ from plain_life.integration import (
 
 
 def main() -> int:
-    version = sys.argv[1] if len(sys.argv) > 1 else "v5"
+    version = sys.argv[1] if len(sys.argv) > 1 else "v6"
     result = run_seven_day_integration(ROOT, version=version)
     docs_path = (
         ROOT
@@ -36,6 +36,7 @@ def main() -> int:
         / version
         / "seven_day_integration.json"
     )
+    docs_path.parent.mkdir(parents=True, exist_ok=True)
     docs_path.write_text(
         render_seven_day_integration_report(result), encoding="utf-8"
     )

@@ -16,7 +16,7 @@ from .survival import run_survival_validation
 
 def run_seven_day_integration(
     root: Path,
-    version: str = "v5",
+    version: str = "v6",
 ) -> dict[str, Any]:
     baseline = load_environment_baseline(
         root
@@ -37,6 +37,7 @@ def run_seven_day_integration(
         state.body.work_capacity for state in behavior_states.values()
     ) / len(behavior_states)
     fixed_behavior_states = copy.deepcopy(behavior_states)
+    full_information_behavior_states = copy.deepcopy(behavior_states)
     run = run_survival_validation(
         world,
         population,
@@ -52,6 +53,15 @@ def run_seven_day_integration(
         behavior_states=fixed_behavior_states,
         enable_social_exchange=True,
         apply_body_feedback=False,
+    )
+    full_information_control = run_survival_validation(
+        world,
+        population,
+        days=7,
+        behavior_states=full_information_behavior_states,
+        record_household_trace=True,
+        enable_social_exchange=True,
+        supply_information_mode="complete_resource_positions",
     )
     integration = run.integration_diagnostics
     if integration.get("daily"):
@@ -156,6 +166,14 @@ def run_seven_day_integration(
             run.household_daily_records,
             population,
         ),
+        "spatial_rule_audit": _spatial_rule_audit(
+            run.migration_records,
+            run.spatial_learning_records,
+            run.household_daily_records,
+            run.food_path_records,
+            "candidate_limited",
+            _fishing_exit_household_ids(run.food_path_records),
+        ),
         "food_intake_summary": _food_intake_summary(
             run.person_food_records
         ),
@@ -180,6 +198,44 @@ def run_seven_day_integration(
             "note": (
                 "Diagnostic counterfactual only; it does not represent a "
                 "proposed behavior."
+            ),
+        },
+        "spatial_information_control": {
+            "mode": "complete_resource_positions_diagnostic",
+            "formal_history": False,
+            "same_initial_world": True,
+            "same_initial_population": True,
+            "same_initial_skills": True,
+            "same_season": True,
+            "same_travel_tool_and_processing_rules": True,
+            "initial_mean_capacity": round(initial_dynamic_capacity, 4),
+            "daily_metrics": [
+                asdict(metric)
+                for metric in full_information_control.metrics
+            ],
+            "resource_ledger": full_information_control.resource_ledger,
+            "food_intake_summary": _food_intake_summary(
+                full_information_control.person_food_records
+            ),
+            "migration_summary": full_information_control.migration_summary,
+            "spatial_rule_audit": _spatial_rule_audit(
+                full_information_control.migration_records,
+                full_information_control.spatial_learning_records,
+                full_information_control.household_daily_records,
+                full_information_control.food_path_records,
+                "complete_resource_positions",
+                _fishing_exit_household_ids(run.food_path_records),
+            ),
+            "fish_exit_diagnosis": _fishing_exit_diagnosis(
+                full_information_control.food_path_records,
+                full_information_control.person_daily_records,
+                full_information_control.household_daily_records,
+                population,
+            ),
+            "note": (
+                "Diagnostic information counterfactual only. It does not "
+                "change formal people, grants no omniscience in the baseline, "
+                "and does not guarantee an optimal route."
             ),
         },
         "social_actions": run.social_action_stats,
@@ -603,6 +659,88 @@ def render_seven_day_integration_report(result: dict[str, Any]) -> str:
                 f"{activity['hours']} | {activity['location_cell']} | "
                 f"`{activity['detail']}` |"
             )
+    spatial = result["spatial_rule_audit"]
+    control = result["spatial_information_control"]
+    control_spatial = control["spatial_rule_audit"]
+    control_fish = control["fish_exit_diagnosis"]
+    lines.extend(
+        [
+            "",
+            "## 空间规则与信息对照",
+            "",
+            "### 当前有限候选规则",
+            "",
+            f"- 规则：`{spatial['rules']}`。",
+            f"- 迁移事件总数：`{spatial['migrations']}`；按日："
+            f"`{spatial['migration_by_day']}`。",
+            f"- 迁移未执行原因："
+            f"`{spatial['migration_blocked_reasons']}`。",
+            f"- 迁移距离：`{spatial['migration_distance_km']}`。",
+            f"- 迁移前后候选鱼类正存量："
+            f"`{spatial['migration_camp_fish_supply_change']}`。",
+            f"- 第 2 日捕鱼队列中后来退出的家庭："
+            f"`{spatial['target_limited_exit_households']}`；"
+            f"其中发生迁移：`{spatial['target_limited_exit_migrations']}`。",
+            f"- 退出队列的迁移未执行原因："
+            f"`{spatial['target_limited_exit_blocked_reasons']}`。",
+            f"- 退出队列食物满足率："
+            f"`{spatial['target_limited_exit_food_ratio']}`。",
+            f"- 退出队列实际选择鱼的家庭数："
+            f"`{spatial['target_limited_exit_fish_selected_households']}`。",
+            "",
+            "| 日 | 考虑迁移 | 实际迁移 | 未执行原因 | 平均新发现格 | 平均侦察新格 | 平均已知格 | 平均候选迁移格 | 平均鱼类正存量格 | 平均鱼类存量 kg |",
+            "| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for day, item in spatial["by_day"].items():
+        lines.append(
+            f"| {day} | {item['migration_considered']} | "
+            f"{item['migrations']} | `{item['reasons']}` | "
+            f"{item['mean_direct_new_cells']} | "
+            f"{item['mean_scout_new_cells']} | "
+            f"{item['mean_known_cells']} | "
+            f"{item['mean_candidate_migration_cells']} | "
+            f"{item['mean_fish_positive_cells']} | "
+            f"{item['mean_fish_stock_kg']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "### 完整位置信息诊断对照",
+            "",
+            "- 该组仅用于诊断，不是正式人物的全知能力，也不保证最优方案。",
+            f"- 规则：`{control_spatial['rules']}`。",
+            f"- 迁移事件：`{control_spatial['migrations']}`；按日："
+            f"`{control_spatial['migration_by_day']}`。",
+            f"- 迁移未执行原因："
+            f"`{control_spatial['migration_blocked_reasons']}`。",
+            f"- 原有限信息退出队列在完整信息组的食物满足率："
+            f"`{control_spatial['target_limited_exit_food_ratio']}`。",
+            f"- 原有限信息退出队列在完整信息组实际选择鱼的家庭数："
+            f"`{control_spatial['target_limited_exit_fish_selected_households']}`。",
+            f"- 有限信息组食物满足率：`{[m['food_ratio'] for m in result['daily_metrics']]}`。",
+            f"- 完整信息组食物满足率："
+            f"`{[m['food_ratio'] for m in control['daily_metrics']]}`。",
+            f"- 第 7 日不同鱼类资源格：有限信息 "
+            f"`{fishing['fish_selected_cells_by_day']['7']['distinct_selected_cells']}`，"
+            f"完整信息 "
+            f"`{control_fish['fish_selected_cells_by_day']['7']['distinct_selected_cells']}`。",
+            "",
+            "| 日 | 有限信息食物比例 | 完整信息食物比例 | 有限信息鱼类格次数 | 有限信息不同鱼格 | 完整信息鱼类格次数 | 完整信息不同鱼格 |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for index, metric in enumerate(result["daily_metrics"]):
+        control_metric = control["daily_metrics"][index]
+        day = int(metric["day"])
+        lines.append(
+            f"| {day} | {metric['food_ratio']} | "
+            f"{control_metric['food_ratio']} | "
+            f"{fishing['fish_selected_cells_by_day'][str(day)]['selected_cell_occurrences']} | "
+            f"{fishing['fish_selected_cells_by_day'][str(day)]['distinct_selected_cells']} | "
+            f"{control_fish['fish_selected_cells_by_day'][str(day)]['selected_cell_occurrences']} | "
+            f"{control_fish['fish_selected_cells_by_day'][str(day)]['distinct_selected_cells']} |"
+        )
     lines.extend(
         [
             "",
@@ -1674,6 +1812,287 @@ def _fishing_exit_diagnosis(
         ),
         "exit_cohort_food_ratio": cohort_food_ratios,
         "representative_exits": representative_exits,
+        "exit_household_ids": sorted(exit_households),
+    }
+
+
+def _fishing_exit_household_ids(
+    path_records: list[dict[str, Any]],
+) -> set[str]:
+    day_two = {
+        item["household_id"]
+        for item in path_records
+        if int(item["day"]) == 2
+        and "fish" in item.get("selected_resources", [])
+    }
+    records_by_household_day = {
+        (item["household_id"], int(item["day"])): item
+        for item in path_records
+    }
+    return {
+        household_id
+        for household_id in day_two
+        if all(
+            "fish"
+            not in records_by_household_day.get(
+                (household_id, day), {}
+            ).get("selected_resources", [])
+            for day in (4, 5)
+        )
+    }
+
+
+def _spatial_rule_audit(
+    migration_records: list[dict[str, Any]],
+    learning_records: list[dict[str, Any]],
+    household_daily_records: list[dict[str, Any]],
+    food_path_records: list[dict[str, Any]],
+    mode: str,
+    target_households: set[str],
+) -> dict[str, Any]:
+    by_day: dict[str, dict[str, Any]] = {}
+    blocked_counts: dict[str, int] = {}
+    migration_by_day: dict[str, int] = {}
+    distances: list[float] = []
+    target_blocked_counts: dict[str, int] = {}
+    target_migration_records = [
+        item
+        for item in migration_records
+        if item["household_id"] in target_households
+    ]
+    target_food_ratios: dict[str, dict[str, float | int | None]] = {}
+    target_fish_selected_days: dict[str, int] = {}
+    for day in (2, 4, 5):
+        values = [
+            float(item["food_ratio"])
+            for item in household_daily_records
+            if int(item["day"]) == day
+            and item["household_id"] in target_households
+        ]
+        target_food_ratios[str(day)] = {
+            "sample_households": len(values),
+            "mean": round(sum(values) / len(values), 6) if values else None,
+            "minimum": round(min(values), 6) if values else None,
+        }
+        selected = {
+            item["household_id"]
+            for item in food_path_records
+            if int(item["day"]) == day
+            and item["household_id"] in target_households
+            and "fish" in item.get("selected_resources", [])
+        }
+        target_fish_selected_days[str(day)] = len(selected)
+    for day in range(1, 8):
+        day_records = [
+            item for item in learning_records if int(item["day"]) == day
+        ]
+        day_migrations = [
+            item for item in migration_records if int(item["day"]) == day
+        ]
+        migration_by_day[str(day)] = len(day_migrations)
+        reasons: dict[str, int] = {}
+        for item in day_records:
+            reason = str(item["migration_blocked_reason"])
+            reasons[reason] = reasons.get(reason, 0) + 1
+            blocked_counts[reason] = blocked_counts.get(reason, 0) + 1
+        by_day[str(day)] = {
+            "household_days": len(day_records),
+            "migration_considered": sum(
+                bool(item["migration_considered"]) for item in day_records
+            ),
+            "migrations": len(day_migrations),
+            "reasons": dict(sorted(reasons.items())),
+            "mean_direct_new_cells": (
+                round(
+                    sum(item["direct_new_cells"] for item in day_records)
+                    / len(day_records),
+                    6,
+                )
+                if day_records
+                else 0.0
+            ),
+            "mean_scout_new_cells": (
+                round(
+                    sum(item["scout_new_cells"] for item in day_records)
+                    / len(day_records),
+                    6,
+                )
+                if day_records
+                else 0.0
+            ),
+            "mean_known_cells": (
+                round(
+                    sum(item["known_cells"] for item in day_records)
+                    / len(day_records),
+                    6,
+                )
+                if day_records
+                else 0.0
+            ),
+            "mean_candidate_migration_cells": (
+                round(
+                    sum(
+                        item["candidate_migration_cells"]
+                        for item in day_records
+                    )
+                    / len(day_records),
+                    6,
+                )
+                if day_records
+                else 0.0
+            ),
+            "mean_supply_candidates": (
+                round(
+                    sum(item["supply_candidates"] for item in day_records)
+                    / len(day_records),
+                    6,
+                )
+                if day_records
+                else 0.0
+            ),
+            "mean_fish_positive_cells": (
+                round(
+                    sum(
+                        int(item["fish_supply"]["positive_cells"])
+                        for item in day_records
+                    )
+                    / len(day_records),
+                    6,
+                )
+                if day_records
+                else 0.0
+            ),
+            "mean_fish_stock_kg": (
+                round(
+                    sum(
+                        float(item["fish_supply"]["stock_kg"])
+                        for item in day_records
+                    )
+                    / len(day_records),
+                    6,
+                )
+                if day_records
+                else 0.0
+            ),
+        }
+    for item in migration_records:
+        distances.append(float(item["distance_km"]))
+    for item in learning_records:
+        if item["household_id"] not in target_households:
+            continue
+        reason = str(item["migration_blocked_reason"])
+        target_blocked_counts[reason] = (
+            target_blocked_counts.get(reason, 0) + 1
+        )
+    target_fish_status = [
+        item
+        for item in learning_records
+        if item["household_id"] in target_households
+        and int(item["day"]) in {4, 5}
+    ]
+    rules = (
+        {
+            "candidate_limit_per_resource": 40,
+            "candidate_radius_km": 4.0,
+            "harvest_uses_person_known_cells": False,
+            "direct_observation_radius_km": 1.0,
+            "scout_observation_radius_km": 2.0,
+            "camp_score_search_radius": (
+                "0.8 + 0.23 * day, capped at 5.0 km from the drop point"
+            ),
+            "migration_schedule": "day 1 and every fifth day",
+            "migration_cooldown_days": 7,
+        }
+        if mode == "candidate_limited"
+        else {
+            "candidate_limit_per_resource": None,
+            "candidate_radius_km": None,
+            "harvest_uses_person_known_cells": False,
+            "resource_positions": "all positive-capacity resource cells",
+            "camp_candidate_cells": "all habitable cells",
+            "movement_time_tool_and_processing_rules": "unchanged",
+        }
+    )
+    return {
+        "mode": mode,
+        "rules": rules,
+        "migrations": len(migration_records),
+        "migration_by_day": migration_by_day,
+        "migration_blocked_reasons": dict(sorted(blocked_counts.items())),
+        "migration_distance_km": {
+            "mean": (
+                round(sum(distances) / len(distances), 6)
+                if distances
+                else 0.0
+            ),
+            "minimum": round(min(distances), 6) if distances else 0.0,
+            "maximum": round(max(distances), 6) if distances else 0.0,
+        },
+        "migration_camp_fish_supply_change": {
+            "records": len(migration_records),
+            "mean_old_positive_cells": (
+                round(
+                    sum(
+                        int(item["old_fish_supply"]["positive_cells"])
+                        for item in migration_records
+                    )
+                    / len(migration_records),
+                    6,
+                )
+                if migration_records
+                else 0.0
+            ),
+            "mean_new_positive_cells": (
+                round(
+                    sum(
+                        int(item["new_fish_supply"]["positive_cells"])
+                        for item in migration_records
+                    )
+                    / len(migration_records),
+                    6,
+                )
+                if migration_records
+                else 0.0
+            ),
+            "mean_old_stock_kg": (
+                round(
+                    sum(
+                        float(item["old_fish_supply"]["stock_kg"])
+                        for item in migration_records
+                    )
+                    / len(migration_records),
+                    6,
+                )
+                if migration_records
+                else 0.0
+            ),
+            "mean_new_stock_kg": (
+                round(
+                    sum(
+                        float(item["new_fish_supply"]["stock_kg"])
+                        for item in migration_records
+                    )
+                    / len(migration_records),
+                    6,
+                )
+                if migration_records
+                else 0.0
+            ),
+        },
+        "target_limited_exit_households": len(target_households),
+        "target_limited_exit_migrations": len(target_migration_records),
+        "target_limited_exit_blocked_reasons": dict(
+            sorted(target_blocked_counts.items())
+        ),
+        "target_limited_exit_day_4_5_fish_positive_household_days": sum(
+            int(item["fish_supply"]["positive_cells"]) > 0
+            for item in target_fish_status
+        ),
+        "target_limited_exit_food_ratio": target_food_ratios,
+        "target_limited_exit_fish_selected_households": (
+            target_fish_selected_days
+        ),
+        "by_day": by_day,
     }
 
 

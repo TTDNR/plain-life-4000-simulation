@@ -143,6 +143,59 @@ class IntegrationDiagnosticTests(unittest.TestCase):
                         "fish", day["selected_resources"]
                     )
 
+    def test_space_information_control_isolates_discovery_limit(self) -> None:
+        limited = self.result["spatial_rule_audit"]
+        self.assertEqual(
+            {
+                "1": 951,
+                "2": 0,
+                "3": 0,
+                "4": 0,
+                "5": 0,
+                "6": 0,
+                "7": 0,
+            },
+            limited["migration_by_day"],
+        )
+        self.assertEqual(
+            238, limited["target_limited_exit_households"]
+        )
+        self.assertEqual(
+            195, limited["target_limited_exit_migrations"]
+        )
+        self.assertEqual(
+            237,
+            limited["target_limited_exit_blocked_reasons"][
+                "migration_cooldown"
+            ],
+        )
+        self.assertFalse(
+            limited["rules"]["harvest_uses_person_known_cells"]
+        )
+
+        control = self.result["spatial_information_control"]
+        self.assertTrue(control["same_initial_world"])
+        self.assertTrue(control["same_initial_population"])
+        self.assertTrue(control["same_initial_skills"])
+        self.assertTrue(control["same_season"])
+        self.assertTrue(control["same_travel_tool_and_processing_rules"])
+        limited_day_seven = self.result["daily_metrics"][-1]["food_ratio"]
+        control_day_seven = control["daily_metrics"][-1]["food_ratio"]
+        self.assertGreater(control_day_seven, limited_day_seven)
+        self.assertLess(control_day_seven, 0.8)
+        self.assertEqual(
+            1,
+            control["fish_exit_diagnosis"][
+                "exited_both_days_households"
+            ],
+        )
+        self.assertGreater(
+            control["fish_exit_diagnosis"][
+                "fish_selected_cells_by_day"
+            ]["7"]["selected_cell_occurrences"],
+            500,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
