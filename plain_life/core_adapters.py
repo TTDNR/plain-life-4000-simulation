@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -103,8 +104,22 @@ class WorldClockAdapter:
     name: str = "environment_world"
 
     def bind(self, core: SimulationCore) -> None:
-        core.register_advance_callback(self.name, self.advance)
+        core.register_advance_callback(
+            self.name,
+            self.advance,
+            required_for_advance=True,
+            restore_factory="WorldClockAdapter",
+        )
         core.set_module_state(self.name, world_to_state(self.world))
+
+    @classmethod
+    def restore(
+        cls,
+        core: SimulationCore,
+        state: dict[str, Any],
+    ):
+        adapter = cls(world_from_state(copy.deepcopy(state)))
+        return adapter.advance
 
     def advance(
         self,
@@ -129,4 +144,3 @@ class PopulationStateAdapter:
         core.set_module_state(
             self.name, population_to_state(self.population)
         )
-

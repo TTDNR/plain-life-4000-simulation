@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import random
 import sqlite3
@@ -31,6 +32,10 @@ from .contracts import (
 
 
 CORE_SNAPSHOT_SCHEMA_VERSION = 1
+
+
+class ModuleBindingError(RuntimeError):
+    """Raised when a restored run lacks a required module callback."""
 
 
 @dataclass
@@ -353,6 +358,7 @@ class SimulationCore:
         self._advance_callbacks: dict[
             str, Callable[[SimulationCore, int, int], None]
         ] = {}
+        self._module_requirements: dict[str, dict[str, Any]] = {}
 
     @classmethod
     def create(
@@ -389,6 +395,7 @@ class SimulationCore:
             raise RuntimeError("simulation is paused")
         if target_world_seconds < self.clock.current_world_seconds:
             raise ValueError("world time cannot move backwards")
+        self._process_current_boundary()
         while self.clock.current_world_seconds < target_world_seconds:
             next_time = target_world_seconds
             for scheduled in self.scheduled_events:
@@ -412,8 +419,6 @@ class SimulationCore:
             start = self.clock.current_world_seconds
             self.clock.current_world_seconds = next_time
             delta = next_time - start
-            for callback in list(self._advance_callbacks.values()):
-                callback(self, start, next_time)
             for action in list(self.actions.values()):
                 if action.status != "active":
                     continue
@@ -424,33 +429,44 @@ class SimulationCore:
                 self.handlers[action.action_type].on_progress(
                     self, action, delta
                 )
-            self._emit_due_scheduled_events()
-            self._complete_due_actions()
+            self._process_current_boundary()
+            for callback in list(self._advance_callbacks.values()):
+                callback(self, start, next_time)
+            self._process_current_boundary()
+        self._process_current_boundary()
 
     def register_advance_callback(
         self,
         name: str,
         callback: Callable[[SimulationCore, int, int], None],
+        *,
+        required_for_advance: bool = True,
+        restore_factory: str | None = None,
     ) -> None:
         self._advance_callbacks[name] = callback
+        if required_for_advance:
+            self._module_requirements[name] = {
+                "required_for_advance": True,
+                "restore_factory": restore_factory or name,
+            }
 
     def set_module_state(self, name: str, state: dict[str, Any]) -> None:
-        self.module_states[name] = state
+        self.module_states[name] = copy.deepcopy(state)
 
     def module_state(self, name: str) -> dict[str, Any]:
-        return self.module_states[name]
+        return copy.deepcopy(self.module_states[name])
 
     def register_person(self, person: PersonState) -> None:
         if person.person_id in self.people:
             raise ValueError(f"duplicate person id {person.person_id}")
-        self.people[person.person_id] = person
+        self.people[person.person_id] = copy.deepcopy(person)
 
     def add_item(self, batch: ItemBatch) -> None:
         if batch.batch_id in self.items:
             raise ValueError(f"duplicate item batch id {batch.batch_id}")
         if batch.quantity < 0.0:
             raise ValueError("item quantity cannot be negative")
-        self.items[batch.batch_id] = batch
+        self.items[batch.batch_id] = copy.deepcopy(batch)
 
     def available_item_quantity(self, batch_id: str) -> float:
         batch = self.items[batch_id]
@@ -477,8 +493,10 @@ class SimulationCore:
         if quantity - available > 1e-9:
             raise ValueError("insufficient unreserved item quantity")
         action = self.actions.get(action_id)
-        if action is None or action.status != "active":
-            raise ValueError("reservation requires an active action")
+        if action is None or action.status not in {"starting", "active"}:
+            raise ValueError(
+                "reservation requires a starting or active action"
+            )
         self.reservation_sequence += 1
         reservation = ItemReservation(
             reservation_id=(
@@ -625,10 +643,12 @@ class SimulationCore:
             status="submitted",
             created_at_world_seconds=intent.formed_at_world_seconds,
             expected_duration_seconds=intent.expected_duration_seconds,
-            target=dict(intent.target),
-            known_conditions=list(intent.known_conditions),
+            target=copy.deepcopy(intent.target),
+            known_conditions=copy.deepcopy(intent.known_conditions),
             expected_outcome=intent.expected_outcome,
-            requested_participants=list(intent.requested_participants),
+            requested_participants=copy.deepcopy(
+                intent.requested_participants
+            ),
         )
         self.actions[action.action_id] = action
         event = self.emit_event(
@@ -651,48 +671,79 @@ class SimulationCore:
         handler = self.handlers.get(action.action_type)
         if handler is None:
             raise KeyError(f"no handler for action type {action.action_type}")
+        person = self.people[action.person_id]
+        if not person.alive:
+            return self._block_action(
+                action,
+                reason="actor_not_alive",
+                facts={"person_id": person.person_id},
+            )
+        if person.current_action_id is not None:
+            return self._block_action(
+                action,
+                reason="actor_busy",
+                facts={
+                    "person_id": person.person_id,
+                    "current_action_id": person.current_action_id,
+                },
+            )
         intent = ActionIntent(
             action_id=action.action_id,
             person_id=action.person_id,
             action_type=action.action_type,
             formed_at_world_seconds=action.created_at_world_seconds,
             expected_duration_seconds=action.expected_duration_seconds,
-            target=action.target,
-            known_conditions=action.known_conditions,
+            target=copy.deepcopy(action.target),
+            known_conditions=copy.deepcopy(action.known_conditions),
             expected_outcome=action.expected_outcome,
-            requested_participants=action.requested_participants,
+            requested_participants=copy.deepcopy(
+                action.requested_participants
+            ),
         )
         validation = handler.validate(self, intent)
         if not validation.allowed:
-            action.status = "blocked"
-            action.ended_at_world_seconds = self.clock.current_world_seconds
-            action.result = {
-                "reason": validation.reason,
-                "facts": validation.facts,
-            }
-            event = self.emit_event(
-                event_type="action_blocked",
-                actor_ids=[action.person_id],
-                action_id=action.action_id,
-                facts=action.result,
+            return self._block_action(
+                action,
+                reason=validation.reason,
+                facts=validation.facts,
             )
-            action.reason_event_ids.append(event.event_id)
-            return action
-        action.status = "active"
+        backup_action = copy.deepcopy(action)
+        backup_reservations = copy.deepcopy(self.reservations)
+        backup_items = copy.deepcopy(self.items)
+        backup_person = copy.deepcopy(person)
+        backup_scheduled_events = copy.deepcopy(self.scheduled_events)
+        backup_event_sequence = self.event_sequence
+        backup_event_count = len(self.events)
+        backup_scheduled_sequence = self.scheduled_sequence
+        action.status = "starting"
         action.started_at_world_seconds = self.clock.current_world_seconds
         action.expected_end_world_seconds = (
             self.clock.current_world_seconds
             + action.expected_duration_seconds
         )
         action.participants = [action.person_id]
-        person = self.people[action.person_id]
-        if person.current_action_id is not None:
-            raise ValueError(
-                f"person {person.person_id} already has active action "
-                f"{person.current_action_id}"
+        try:
+            handler.begin(self, action)
+        except Exception as exc:
+            self.actions[action.action_id] = backup_action
+            self.reservations = backup_reservations
+            self.items = backup_items
+            self.people[person.person_id] = backup_person
+            self.scheduled_events = backup_scheduled_events
+            self.event_sequence = backup_event_sequence
+            self.scheduled_sequence = backup_scheduled_sequence
+            del self.events[backup_event_count:]
+            action = self.actions[action.action_id]
+            return self._block_action(
+                action,
+                reason="handler_begin_failed",
+                facts={
+                    "exception_type": type(exc).__name__,
+                    "exception": str(exc),
+                },
             )
+        action.status = "active"
         person.current_action_id = action.action_id
-        handler.begin(self, action)
         event = self.emit_event(
             event_type="action_started",
             actor_ids=action.participants,
@@ -704,6 +755,28 @@ class SimulationCore:
                 ),
                 "validation": validation.facts,
             },
+        )
+        action.reason_event_ids.append(event.event_id)
+        return action
+
+    def _block_action(
+        self,
+        action: ActionRecord,
+        *,
+        reason: str,
+        facts: dict[str, Any] | None = None,
+    ) -> ActionRecord:
+        action.status = "blocked"
+        action.ended_at_world_seconds = self.clock.current_world_seconds
+        action.result = {
+            "reason": reason,
+            "facts": copy.deepcopy(facts or {}),
+        }
+        event = self.emit_event(
+            event_type="action_blocked",
+            actor_ids=[action.person_id],
+            action_id=action.action_id,
+            facts=action.result,
         )
         action.reason_event_ids.append(event.event_id)
         return action
@@ -794,15 +867,50 @@ class SimulationCore:
             ),
             due_world_seconds=due_world_seconds,
             event_type=event_type,
-            actor_ids=list(actor_ids or []),
-            facts=dict(facts or {}),
+            actor_ids=copy.deepcopy(actor_ids or []),
+            facts=copy.deepcopy(facts or {}),
             action_id=action_id,
-            cause_event_ids=list(cause_event_ids or []),
-            observed_by=list(observed_by or []),
+            cause_event_ids=copy.deepcopy(cause_event_ids or []),
+            observed_by=copy.deepcopy(observed_by or []),
             location=location,
         )
         self.scheduled_events.append(scheduled)
         return scheduled
+
+    def _process_current_boundary(self) -> None:
+        seen: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+        for _ in range(10_000):
+            due_events = tuple(
+                sorted(
+                    event.scheduled_id
+                    for event in self.scheduled_events
+                    if event.due_world_seconds
+                    <= self.clock.current_world_seconds
+                )
+            )
+            due_actions = tuple(
+                sorted(
+                    action.action_id
+                    for action in self.actions.values()
+                    if action.status == "active"
+                    and action.expected_end_world_seconds is not None
+                    and action.expected_end_world_seconds
+                    <= self.clock.current_world_seconds
+                )
+            )
+            if not due_events and not due_actions:
+                return
+            signature = (due_events, due_actions)
+            if signature in seen:
+                raise RuntimeError(
+                    "current-time event/action loop made no progress"
+                )
+            seen.add(signature)
+            self._emit_due_scheduled_events()
+            self._complete_due_actions()
+        raise RuntimeError(
+            "current-time event/action loop exceeded safety limit"
+        )
 
     def _emit_due_scheduled_events(self) -> None:
         due = [
@@ -848,11 +956,11 @@ class SimulationCore:
             sequence=self.event_sequence,
             world_seconds=self.clock.current_world_seconds,
             event_type=event_type,
-            actor_ids=list(actor_ids),
+            actor_ids=copy.deepcopy(actor_ids),
             action_id=action_id,
-            cause_event_ids=list(cause_event_ids or []),
-            facts=dict(facts),
-            observed_by=list(observed_by or []),
+            cause_event_ids=copy.deepcopy(cause_event_ids or []),
+            facts=copy.deepcopy(facts),
+            observed_by=copy.deepcopy(observed_by or []),
             location=location,
         )
         self.events.append(event)
@@ -861,7 +969,7 @@ class SimulationCore:
     def record_decision(self, trace: DecisionTrace) -> None:
         if trace.decision_id in self.decisions:
             raise ValueError(f"duplicate decision id {trace.decision_id}")
-        self.decisions[trace.decision_id] = trace
+        self.decisions[trace.decision_id] = copy.deepcopy(trace)
 
     def record_knowledge(
         self,
@@ -922,10 +1030,12 @@ class SimulationCore:
         ] = value
 
     def add_social_response(self, response: SocialResponse) -> None:
-        self.social_responses[response.response_id] = response
+        self.social_responses[response.response_id] = copy.deepcopy(response)
 
     def add_commitment(self, commitment: Commitment) -> None:
-        self.commitments[commitment.commitment_id] = commitment
+        self.commitments[commitment.commitment_id] = copy.deepcopy(
+            commitment
+        )
 
     def stated_claim(self, person_id: str, claim: str) -> None:
         self.stated_claims.setdefault(person_id, []).append(claim)
@@ -954,17 +1064,14 @@ class SimulationCore:
             person_id=person_id,
             generated_at_world_seconds=self.clock.current_world_seconds,
             location=person.location,
-            body=dict(person.body),
+            body=copy.deepcopy(person.body),
             current_action_id=person.current_action_id,
-            knowledge=[
-                dict(item) for item in self.knowledge.get(person_id, [])
-            ],
-            known_locations=[
-                dict(item)
-                for item in self.known_locations.get(person_id, [])
-            ],
-            known_item_ids=known_items,
-            pending_commitments=commitments,
+            knowledge=copy.deepcopy(self.knowledge.get(person_id, [])),
+            known_locations=copy.deepcopy(
+                self.known_locations.get(person_id, [])
+            ),
+            known_item_ids=list(known_items),
+            pending_commitments=copy.deepcopy(commitments),
             stated_claims=list(self.stated_claims.get(person_id, [])),
         )
 
@@ -997,10 +1104,10 @@ class SimulationCore:
             ):
                 continue
             selected.append(event)
-        return [event.to_dict() for event in selected]
+        return copy.deepcopy([event.to_dict() for event in selected])
 
     def snapshot(self) -> dict[str, Any]:
-        return {
+        snapshot = {
             "schema_version": CORE_SNAPSHOT_SCHEMA_VERSION,
             "manifest": self.manifest.to_dict(),
             "clock": self.clock.to_dict(),
@@ -1043,6 +1150,7 @@ class SimulationCore:
                 for key, value in sorted(self.commitments.items())
             },
             "module_states": self.module_states,
+            "module_requirements": self._module_requirements,
             "sequences": {
                 "event": self.event_sequence,
                 "item": self.item_sequence,
@@ -1050,6 +1158,7 @@ class SimulationCore:
                 "scheduled": self.scheduled_sequence,
             },
         }
+        return copy.deepcopy(snapshot)
 
     @classmethod
     def from_snapshot(
@@ -1061,7 +1170,16 @@ class SimulationCore:
             str, Callable[[SimulationCore, int, int], None]
         ]
         | None = None,
+        module_factories: dict[
+            str,
+            Callable[
+                [SimulationCore, dict[str, Any]],
+                Callable[[SimulationCore, int, int], None] | None,
+            ],
+        ]
+        | None = None,
     ) -> SimulationCore:
+        snapshot = copy.deepcopy(snapshot)
         if int(snapshot["schema_version"]) != CORE_SNAPSHOT_SCHEMA_VERSION:
             raise ContractVersionError("unsupported core snapshot schema")
         sequences = snapshot["sequences"]
@@ -1118,6 +1236,9 @@ class SimulationCore:
         )
         for name, callback in (advance_callbacks or {}).items():
             core.register_advance_callback(name, callback)
+        core._module_requirements.update(
+            copy.deepcopy(snapshot.get("module_requirements", {}))
+        )
         return core
 
     def save(self, path: Path) -> None:
@@ -1193,6 +1314,14 @@ class SimulationCore:
             str, Callable[[SimulationCore, int, int], None]
         ]
         | None = None,
+        module_factories: dict[
+            str,
+            Callable[
+                [SimulationCore, dict[str, Any]],
+                Callable[[SimulationCore, int, int], None] | None,
+            ],
+        ]
+        | None = None,
     ) -> SimulationCore:
         connection = sqlite3.connect(path)
         try:
@@ -1229,11 +1358,37 @@ class SimulationCore:
                 "missing handlers for active actions: "
                 f"{sorted(missing_handlers)}"
             )
-        return cls.from_snapshot(
+        core = cls.from_snapshot(
             snapshot,
             handlers=handlers,
             advance_callbacks=advance_callbacks,
         )
+        for name, requirement in core._module_requirements.items():
+            if not requirement.get("required_for_advance", False):
+                continue
+            if name in core._advance_callbacks:
+                continue
+            factory = (module_factories or {}).get(name)
+            if factory is None:
+                raise ModuleBindingError(
+                    f"required module {name!r} is not bound after restore; "
+                    "provide module_factories or advance_callbacks"
+                )
+            callback = factory(core, core.module_state(name))
+            if callback is not None:
+                core.register_advance_callback(
+                    name,
+                    callback,
+                    required_for_advance=True,
+                    restore_factory=str(
+                        requirement.get("restore_factory", name)
+                    ),
+                )
+            if name not in core._advance_callbacks:
+                raise ModuleBindingError(
+                    f"module factory for {name!r} did not bind a callback"
+                )
+        return core
 
 
 def create_run(

@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 from plain_life.contracts import (  # noqa: E402
     CONTRACT_VERSION,
     ActionIntent,
+    ActionRecord,
     Commitment,
     ItemBatch,
     Location,
@@ -28,6 +29,8 @@ from plain_life.core_adapters import (  # noqa: E402
     world_to_state,
 )
 from plain_life.core import (  # noqa: E402
+    BaseActionHandler,
+    ModuleBindingError,
     SimulationCore,
     TransferItemHandler,
     create_run,
@@ -125,6 +128,110 @@ def _transfer_intent(
 
 
 class CoreContractTests(unittest.TestCase):
+    def test_busy_actor_start_is_blocked_before_state_commit(self) -> None:
+        core = _core()
+        core.items["food"].quantity = 3.0
+        first = core.submit_action(
+            _transfer_intent(
+                action_id="first",
+                target_person_id="p2",
+                formed_at=0,
+                duration_seconds=60,
+            )
+        )
+        second = core.submit_action(
+            _transfer_intent(
+                action_id="second",
+                target_person_id="p3",
+                formed_at=0,
+                duration_seconds=60,
+            )
+        )
+        core.start_action(first.action_id)
+        blocked = core.start_action(second.action_id)
+        self.assertEqual("blocked", blocked.status)
+        self.assertEqual(
+            ["first"],
+            [
+                action.action_id
+                for action in core.actions.values()
+                if action.status == "active"
+            ],
+        )
+        self.assertIsNone(blocked.started_at_world_seconds)
+        self.assertIsNone(blocked.expected_end_world_seconds)
+        self.assertFalse(
+            [
+                reservation
+                for reservation in core.reservations.values()
+                if reservation.action_id == "second"
+            ]
+        )
+        core.advance_to(60)
+        transfers = [
+            batch
+            for batch in core.items.values()
+            if ":transfer:" in batch.batch_id
+        ]
+        self.assertEqual(1, len(transfers))
+
+    def test_handler_begin_failure_rolls_back_start_and_reservation(
+        self,
+    ) -> None:
+        class FailingHandler(BaseActionHandler):
+            action_type = "failing"
+
+            def begin(
+                self, core: SimulationCore, action: ActionRecord
+            ) -> None:
+                core.reserve_item(
+                    batch_id="food",
+                    quantity=0.2,
+                    action_id=action.action_id,
+                    purpose="failure_probe",
+                )
+                raise RuntimeError("begin failed")
+
+        core = create_run(
+            _manifest("begin-failure"),
+            {"failing": FailingHandler()},
+        )
+        core.register_person(
+            PersonState("p1", "h1", Location(0, 0, 0))
+        )
+        core.add_item(
+            ItemBatch(
+                batch_id="food",
+                category="berries",
+                quantity=1.0,
+                unit="kg",
+                state="edible",
+                owner_kind="person",
+                owner_id="p1",
+            )
+        )
+        action = core.submit_action(
+            ActionIntent(
+                action_id="failing-action",
+                person_id="p1",
+                action_type="failing",
+                formed_at_world_seconds=0,
+                expected_duration_seconds=60,
+            )
+        )
+        result = core.start_action(action.action_id)
+        self.assertEqual("blocked", result.status)
+        self.assertIsNone(result.started_at_world_seconds)
+        self.assertIsNone(core.people["p1"].current_action_id)
+        self.assertFalse(core.reservations)
+        self.assertFalse(
+            [
+                event
+                for event in core.events
+                if event.event_type == "item_reserved"
+            ]
+        )
+
     def test_reservation_blocks_double_delivery(self) -> None:
         core = _core()
         first = core.submit_action(
@@ -262,6 +369,86 @@ class CoreContractTests(unittest.TestCase):
         core.advance_by(1)
         self.assertEqual(11, core.clock.current_world_seconds)
 
+    def test_read_views_are_isolated_from_authoritative_state(self) -> None:
+        core = _core()
+        core.record_known_location(
+            person_id="p1",
+            location=Location(12.0, 34.0, 1),
+            label="water",
+            source_event_id=None,
+            certainty=1.0,
+        )
+        snapshot = core.snapshot()
+        snapshot["people"]["p1"]["body"]["hunger"] = 999
+        snapshot["module_states"]["shared"] = {"value": 1}
+        self.assertEqual(0.2, core.people["p1"].body["hunger"])
+        query = core.query_events()
+        query[0]["facts"]["scenario_id"] = "changed"
+        self.assertNotEqual(
+            "changed", core.events[0].facts.get("scenario_id")
+        )
+        perceived = core.perceived_state("p1")
+        perceived.known_locations[0]["location"]["x_m"] = 999
+        self.assertEqual(12.0, core.known_locations["p1"][0]["location"]["x_m"])
+
+    def test_due_now_event_is_processed_at_current_time_and_segments_match(
+        self,
+    ) -> None:
+        direct = _core()
+        direct.schedule_event(
+            due_world_seconds=0,
+            event_type="due_now",
+            actor_ids=["p1"],
+            facts={"expected": 0},
+        )
+        direct.schedule_event(
+            due_world_seconds=5,
+            event_type="due_later",
+            actor_ids=["p1"],
+            facts={"expected": 5},
+        )
+        direct.advance_to(0)
+        self.assertEqual(
+            [0],
+            [
+                event.world_seconds
+                for event in direct.events
+                if event.event_type == "due_now"
+            ],
+        )
+        direct.advance_to(10)
+        self.assertEqual(
+            [0],
+            [
+                event.world_seconds
+                for event in direct.events
+                if event.event_type == "due_now"
+            ],
+        )
+
+        segmented = _core()
+        segmented.schedule_event(
+            due_world_seconds=5,
+            event_type="due_later",
+            actor_ids=["p1"],
+            facts={"expected": 5},
+        )
+        segmented.advance_to(2)
+        segmented.advance_to(5)
+        segmented.advance_to(10)
+        self.assertEqual(
+            [
+                (event.event_type, event.world_seconds)
+                for event in direct.events
+                if event.event_type == "due_later"
+            ],
+            [
+                (event.event_type, event.world_seconds)
+                for event in segmented.events
+                if event.event_type == "due_later"
+            ],
+        )
+
     def test_existing_world_follows_core_clock_and_round_trips(self) -> None:
         baseline = load_environment_baseline(
             ROOT
@@ -292,11 +479,24 @@ class CoreContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "adapter.sqlite3"
             core.save(path)
-            loaded = SimulationCore.load(path)
+            with self.assertRaises(ModuleBindingError):
+                SimulationCore.load(path)
+            loaded = SimulationCore.load(
+                path,
+                module_factories={
+                    "environment_world": WorldClockAdapter.restore
+                },
+            )
             restored_world = world_from_state(
                 loaded.module_state("environment_world")
             )
+            loaded.advance_to(3 * 86400)
+            self.assertEqual(
+                3,
+                loaded.module_state("environment_world")["elapsed_days"],
+            )
         self.assertEqual(world.fingerprint(), restored_world.fingerprint())
+        self.assertEqual(2, restored_world.elapsed_days)
 
 
 if __name__ == "__main__":

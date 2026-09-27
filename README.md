@@ -10,6 +10,7 @@ R1/S01 的现状清点和统一执行核心已开始实现：
 
 - [S01-0 现状清点](docs/s01/S01-0_CURRENT_STATE.md)
 - [S01-1 契约与执行核心](docs/s01/S01-1_CORE_CONTRACT.md)
+- [S01-1 核心整改 A01—A04](docs/s01/S01-1_REMEDIATION.md)
 
 ## 项目目标
 

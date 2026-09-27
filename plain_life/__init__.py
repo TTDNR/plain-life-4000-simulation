@@ -12,6 +12,7 @@ from .environment import (
 from .core import (
     BaseActionHandler,
     ConsumeItemHandler,
+    ModuleBindingError,
     SimulationClock,
     SimulationCore,
     TransferItemHandler,
@@ -43,6 +44,7 @@ __all__ = [
     "Event",
     "ItemBatch",
     "Location",
+    "ModuleBindingError",
     "PerceivedState",
     "PersonState",
     "PopulationState",
