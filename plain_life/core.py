@@ -430,7 +430,6 @@ class SimulationCore:
                 self.handlers[action.action_type].on_progress(
                     self, action, delta
                 )
-            self._process_current_boundary()
             for callback in list(self._advance_callbacks.values()):
                 callback(self, start, next_time)
             self._process_current_boundary()
@@ -739,7 +738,10 @@ class SimulationCore:
         backup_reservation_sequence = self.reservation_sequence
         backup_event_count = len(self.events)
         backup_scheduled_sequence = self.scheduled_sequence
-        self._active_start_transaction = {"module_states": {}}
+        self._active_start_transaction = {
+            "module_states": {},
+            "people": {},
+        }
         action.status = "starting"
         action.started_at_world_seconds = self.clock.current_world_seconds
         action.expected_end_world_seconds = (
@@ -774,6 +776,10 @@ class SimulationCore:
                     self.module_states[name] = previous
                 else:
                     self.module_states.pop(name, None)
+            for person_id, previous_person in (
+                self._active_start_transaction["people"].items()
+            ):
+                self.people[person_id] = previous_person
             del self.events[backup_event_count:]
             self._active_start_transaction = None
             action = self.actions[action.action_id]
@@ -1072,6 +1078,91 @@ class SimulationCore:
         self.relationships.setdefault(person_id, {})[
             f"{other_person_id}:{domain}"
         ] = value
+
+    def set_person_location(
+        self,
+        *,
+        person_id: str,
+        location: Location,
+        action_id: str | None,
+        reason: str,
+    ) -> dict[str, Any]:
+        person = self.people[person_id]
+        self._capture_person_in_start_transaction(person_id)
+        previous = person.location
+        person.location = location
+        event = self.emit_event(
+            event_type="person_moved",
+            actor_ids=[person_id],
+            action_id=action_id,
+            facts={
+                "from": previous.to_dict(),
+                "to": location.to_dict(),
+                "reason": reason,
+            },
+            location=location,
+        )
+        return {
+            "event_id": event.event_id,
+            "from": previous.to_dict(),
+            "to": location.to_dict(),
+        }
+
+    def apply_body_delta(
+        self,
+        *,
+        person_id: str,
+        delta: dict[str, float],
+        action_id: str | None,
+        reason: str,
+        clamp_unit_fields: bool = True,
+    ) -> dict[str, Any]:
+        person = self.people[person_id]
+        self._capture_person_in_start_transaction(person_id)
+        before = copy.deepcopy(person.body)
+        normalized_delta = {
+            key: float(value) for key, value in delta.items()
+        }
+        for key, value in normalized_delta.items():
+            current = float(person.body.get(key, 0.0))
+            updated = current + value
+            if clamp_unit_fields and key in {
+                "hunger",
+                "thirst",
+                "fatigue",
+                "pain",
+                "injury",
+                "mobility",
+            }:
+                updated = max(0.0, min(1.0, updated))
+            person.body[key] = updated
+        event = self.emit_event(
+            event_type="body_state_changed",
+            actor_ids=[person_id],
+            action_id=action_id,
+            facts={
+                "before": before,
+                "after": copy.deepcopy(person.body),
+                "delta": normalized_delta,
+                "reason": reason,
+            },
+            location=person.location,
+        )
+        return {
+            "event_id": event.event_id,
+            "before": before,
+            "after": copy.deepcopy(person.body),
+            "delta": normalized_delta,
+        }
+
+    def _capture_person_in_start_transaction(
+        self, person_id: str
+    ) -> None:
+        if self._active_start_transaction is None:
+            return
+        captured = self._active_start_transaction["people"]
+        if person_id not in captured:
+            captured[person_id] = copy.deepcopy(self.people[person_id])
 
     def add_social_response(self, response: SocialResponse) -> None:
         self.social_responses[response.response_id] = copy.deepcopy(response)

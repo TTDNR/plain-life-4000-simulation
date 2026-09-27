@@ -16,6 +16,7 @@ Phase 1 审计工具：
 py -3.12 -m compileall -q tools tests
 py -3.12 -m unittest discover -s tests -v
 py -3.12 tools\run_core_contract.py --code-commit <implementation-commit>
+py -3.12 tools\run_water_chain.py --code-commit <implementation-commit>
 py -3.12 tools\run_behavior_scenarios.py v4
 py -3.12 tools\run_integration_diagnostic.py v6
 py -3.12 tools\run_phase1.py --version v3 --days 365 --allow-failed

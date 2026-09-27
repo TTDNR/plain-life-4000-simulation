@@ -18,6 +18,11 @@ from .core import (
     TransferItemHandler,
     create_run,
 )
+from .life_actions import (
+    DrinkAtWaterHandler,
+    MoveToLocationHandler,
+    move_duration_seconds,
+)
 from .contracts import (
     ActionIntent,
     ActionRecord,
@@ -41,10 +46,12 @@ __all__ = [
     "ConsumeItemHandler",
     "ContractVersionError",
     "EnvironmentBaseline",
+    "DrinkAtWaterHandler",
     "Event",
     "ItemBatch",
     "Location",
     "ModuleBindingError",
+    "MoveToLocationHandler",
     "PerceivedState",
     "PersonState",
     "PopulationState",
@@ -55,6 +62,7 @@ __all__ = [
     "WorldState",
     "TransferItemHandler",
     "create_run",
+    "move_duration_seconds",
     "generate_environment",
     "generate_population",
     "load_environment_baseline",
