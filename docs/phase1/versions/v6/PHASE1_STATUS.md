@@ -5,6 +5,8 @@
 
 ## 本轮交付
 
+- [空间发现与信息对照示意](SPATIAL_ACCESS_DIAGNOSTIC.png)
+- [可编辑 SVG](SPATIAL_ACCESS_DIAGNOSTIC.svg)
 - [空间发现与信息对照诊断](SPATIAL_ACCESS_DIAGNOSTIC.md)
 - [七天整合诊断](SEVEN_DAY_INTEGRATION.md)
 - [变更记录](CHANGES.md)

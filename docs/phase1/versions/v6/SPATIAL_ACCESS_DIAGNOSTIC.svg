@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <rect width="1600" height="1000" fill="#f7f8fa"/>
+  <text x="50" y="58" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="34" font-weight="700" fill="#172033">
+    v6 空间发现与信息对照示意
+  </text>
+  <text x="50" y="92" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5b6578">
+    同一世界、人口、技能、季节、劳动与加工规则；只改变资源位置信息的可得范围
+  </text>
+
+  <!-- Panel A -->
+  <rect x="40" y="120" width="460" height="820" rx="18" fill="#ffffff" stroke="#d9dee8" stroke-width="2"/>
+  <text x="70" y="165" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="25" font-weight="700" fill="#172033">
+    1. 有限候选规则
+  </text>
+  <text x="70" y="197" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#5b6578">
+    采集并不检查个人 known_cells
+  </text>
+
+  <rect x="70" y="225" width="400" height="250" rx="14" fill="#f2f5fb" stroke="#c8d1e3" stroke-width="2"/>
+  <circle cx="270" cy="350" r="118" fill="none" stroke="#7f8eb0" stroke-width="2" stroke-dasharray="8 7"/>
+  <circle cx="270" cy="350" r="25" fill="#2f5ea8"/>
+  <text x="270" y="357" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#ffffff">
+    营地
+  </text>
+  <text x="270" y="243" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" fill="#4d5b76">
+    4 km 半径
+  </text>
+
+  <!-- fish candidate cells -->
+  <g fill="#6f9fd8" stroke="#2f5ea8" stroke-width="2">
+    <rect x="188" y="279" width="18" height="18"/>
+    <rect x="224" y="258" width="18" height="18"/>
+    <rect x="268" y="250" width="18" height="18"/>
+    <rect x="312" y="270" width="18" height="18"/>
+    <rect x="348" y="306" width="18" height="18"/>
+    <rect x="358" y="348" width="18" height="18"/>
+    <rect x="340" y="392" width="18" height="18"/>
+    <rect x="302" y="422" width="18" height="18"/>
+    <rect x="256" y="430" width="18" height="18"/>
+    <rect x="212" y="412" width="18" height="18"/>
+    <rect x="178" y="376" width="18" height="18"/>
+    <rect x="174" y="330" width="18" height="18"/>
+  </g>
+  <text x="270" y="458" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" fill="#33415c">
+    每个资源只保留评分最高的 40 个格
+  </text>
+
+  <rect x="70" y="500" width="400" height="86" rx="12" fill="#fff4e5" stroke="#e5b76e" stroke-width="2"/>
+  <text x="90" y="533" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" font-weight="700" fill="#7b4b00">
+    固定限制
+  </text>
+  <text x="90" y="562" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" fill="#6d552b">
+    40 格 / 资源 · 4 km · 营地候选长期不变
+  </text>
+
+  <text x="70" y="635" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="21" font-weight="700" fill="#172033">
+    发现曲线
+  </text>
+  <line x1="80" y1="755" x2="460" y2="755" stroke="#b8c0cf" stroke-width="2"/>
+  <line x1="80" y1="670" x2="80" y2="760" stroke="#b8c0cf" stroke-width="2"/>
+  <polyline points="96,690 160,716 224,755 288,755 352,755 416,755 450,755" fill="none" stroke="#2f5ea8" stroke-width="5"/>
+  <g fill="#2f5ea8">
+    <circle cx="96" cy="690" r="6"/>
+    <circle cx="160" cy="716" r="6"/>
+    <circle cx="224" cy="755" r="6"/>
+    <circle cx="288" cy="755" r="6"/>
+    <circle cx="352" cy="755" r="6"/>
+    <circle cx="416" cy="755" r="6"/>
+    <circle cx="450" cy="755" r="6"/>
+  </g>
+  <text x="96" y="782" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" fill="#5b6578">日1</text>
+  <text x="224" y="782" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" fill="#5b6578">日3</text>
+  <text x="352" y="782" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" fill="#5b6578">日5</text>
+  <text x="450" y="782" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" fill="#5b6578">日7</text>
+  <text x="270" y="835" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" font-weight="700" fill="#a13c35">
+    第 3–7 日平均新发现格 = 0
+  </text>
+  <text x="270" y="873" text-anchor="middle" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" fill="#5b6578">
+    已知格固定在 27.748 个
+  </text>
+
+  <!-- Panel B -->
+  <rect x="530" y="120" width="460" height="820" rx="18" fill="#ffffff" stroke="#d9dee8" stroke-width="2"/>
+  <text x="560" y="165" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="25" font-weight="700" fill="#172033">
+    2. 迁移没有解除困局
+  </text>
+  <text x="560" y="197" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#5b6578">
+    第 2 日捕鱼、后来退出：238 户
+  </text>
+
+  <rect x="560" y="226" width="400" height="92" rx="14" fill="#eef8f0" stroke="#74a77b" stroke-width="2"/>
+  <text x="580" y="261" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="31" font-weight="700" fill="#2d6b3a">951</text>
+  <text x="678" y="261" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" fill="#33415c">次迁移，全部在第 1 日</text>
+  <text x="580" y="294" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" fill="#4f6c55">
+    平均 0.182 km · 最长 0.283 km
+  </text>
+
+  <rect x="560" y="342" width="190" height="95" rx="12" fill="#f2f5fb" stroke="#c8d1e3" stroke-width="2"/>
+  <text x="580" y="374" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#5b6578">退出队列迁移</text>
+  <text x="580" y="411" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="29" font-weight="700" fill="#2f5ea8">195 户</text>
+
+  <rect x="770" y="342" width="190" height="95" rx="12" fill="#fff4e5" stroke="#e5b76e" stroke-width="2"/>
+  <text x="790" y="374" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#6d552b">第 5 日冷却</text>
+  <text x="790" y="411" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="29" font-weight="700" fill="#a56a00">237 户日</text>
+
+  <text x="560" y="485" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="21" font-weight="700" fill="#172033">
+    鱼类正存量候选格
+  </text>
+  <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" fill="#5b6578">
+    <text x="570" y="548" text-anchor="middle">日1</text>
+    <text x="628" y="548" text-anchor="middle">日2</text>
+    <text x="686" y="548" text-anchor="middle">日3</text>
+    <text x="744" y="548" text-anchor="middle">日4</text>
+    <text x="802" y="548" text-anchor="middle">日5</text>
+    <text x="860" y="548" text-anchor="middle">日6</text>
+    <text x="918" y="548" text-anchor="middle">日7</text>
+  </g>
+  <g fill="#6f9fd8">
+    <rect x="558" y="510" width="24" height="28"/>
+    <rect x="616" y="531" width="24" height="28"/>
+    <rect x="674" y="608" width="24" height="28"/>
+    <rect x="732" y="692" width="24" height="28"/>
+    <rect x="790" y="724" width="24" height="28"/>
+    <rect x="848" y="740" width="24" height="28"/>
+    <rect x="906" y="744" width="24" height="28"/>
+  </g>
+  <line x1="555" y1="744" x2="945" y2="744" stroke="#b8c0cf" stroke-width="2"/>
+  <text x="560" y="794" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#33415c">
+    40 → 27.05 → 12.76 → 3.46 → 0.80 → 0.15 → 0.05
+  </text>
+
+  <rect x="560" y="830" width="400" height="76" rx="12" fill="#fdeceb" stroke="#d7837d" stroke-width="2"/>
+  <text x="580" y="861" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" font-weight="700" fill="#8f2f2a">
+    迁移改变了营地位置，却没有增加新的候选资源。
+  </text>
+  <text x="580" y="888" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" fill="#7b4a46">
+    第 2–7 日没有新的发现，压力继续集中在原有 40 格。
+  </text>
+
+  <!-- Panel C -->
+  <rect x="1020" y="120" width="540" height="820" rx="18" fill="#ffffff" stroke="#d9dee8" stroke-width="2"/>
+  <text x="1050" y="165" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="25" font-weight="700" fill="#172033">
+    3. 完整位置信息对照
+  </text>
+  <text x="1050" y="197" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#5b6578">
+    诊断用，不写入正式人物能力
+  </text>
+
+  <text x="1050" y="242" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" font-weight="700" fill="#33415c">
+    食物满足率
+  </text>
+  <line x1="1070" y1="385" x2="1510" y2="385" stroke="#c5cbd7" stroke-width="2"/>
+  <line x1="1070" y1="270" x2="1070" y2="390" stroke="#c5cbd7" stroke-width="2"/>
+  <line x1="1070" y1="354" x2="1510" y2="354" stroke="#e0a2a2" stroke-width="2" stroke-dasharray="7 6"/>
+  <text x="1500" y="345" text-anchor="end" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" fill="#a13c35">
+    80% 门槛
+  </text>
+  <polyline points="1080,341 1145,333 1210,349 1275,376 1340,414 1405,447 1470,466" fill="none" stroke="#2f67a5" stroke-width="5"/>
+  <polyline points="1080,291 1145,301 1210,322 1275,331 1340,349 1405,359 1470,370" fill="none" stroke="#2f8f5b" stroke-width="5"/>
+  <g fill="#2f67a5">
+    <circle cx="1080" cy="341" r="6"/><circle cx="1145" cy="333" r="6"/><circle cx="1210" cy="349" r="6"/>
+    <circle cx="1275" cy="376" r="6"/><circle cx="1340" cy="414" r="6"/><circle cx="1405" cy="447" r="6"/><circle cx="1470" cy="466" r="6"/>
+  </g>
+  <g fill="#2f8f5b">
+    <circle cx="1080" cy="291" r="6"/><circle cx="1145" cy="301" r="6"/><circle cx="1210" cy="322" r="6"/>
+    <circle cx="1275" cy="331" r="6"/><circle cx="1340" cy="349" r="6"/><circle cx="1405" cy="359" r="6"/><circle cx="1470" cy="370" r="6"/>
+  </g>
+  <g font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="13" fill="#5b6578">
+    <text x="1080" y="411" text-anchor="middle">日1</text>
+    <text x="1210" y="411" text-anchor="middle">日3</text>
+    <text x="1340" y="411" text-anchor="middle">日5</text>
+    <text x="1470" y="411" text-anchor="middle">日7</text>
+  </g>
+  <line x1="1095" y1="438" x2="1130" y2="438" stroke="#2f67a5" stroke-width="5"/>
+  <text x="1140" y="444" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" fill="#33415c">有限信息</text>
+  <line x1="1260" y1="438" x2="1295" y2="438" stroke="#2f8f5b" stroke-width="5"/>
+  <text x="1305" y="444" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" fill="#33415c">完整信息</text>
+
+  <rect x="1050" y="475" width="480" height="105" rx="14" fill="#f2f5fb" stroke="#c8d1e3" stroke-width="2"/>
+  <text x="1080" y="510" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#5b6578">第 7 日不同鱼类资源格</text>
+  <text x="1080" y="554" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="33" font-weight="700" fill="#2f67a5">1</text>
+  <text x="1120" y="554" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5b6578">→</text>
+  <text x="1168" y="554" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="33" font-weight="700" fill="#2f8f5b">50</text>
+  <text x="1225" y="554" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#5b6578">不同鱼格被使用</text>
+
+  <rect x="1050" y="610" width="230" height="112" rx="14" fill="#eef8f0" stroke="#74a77b" stroke-width="2"/>
+  <text x="1080" y="645" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#4f6c55">完整信息第 7 日</text>
+  <text x="1080" y="690" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="35" font-weight="700" fill="#2d6b3a">0.4222</text>
+
+  <rect x="1300" y="610" width="230" height="112" rx="14" fill="#fdeceb" stroke="#d7837d" stroke-width="2"/>
+  <text x="1330" y="645" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="17" fill="#7b4a46">仍低于门槛</text>
+  <text x="1330" y="690" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="35" font-weight="700" fill="#a13c35">&lt; 0.80</text>
+
+  <rect x="1050" y="760" width="480" height="135" rx="14" fill="#f8fafc" stroke="#c8d1e3" stroke-width="2"/>
+  <text x="1075" y="796" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" font-weight="700" fill="#172033">
+    两个结论同时成立
+  </text>
+  <text x="1075" y="831" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" fill="#33415c">
+    1. 候选规则造成明显假性受困。
+  </text>
+  <text x="1075" y="862" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" fill="#33415c">
+    2. 信息充分后仍有获取、交通或加工不足。
+  </text>
+
+  <text x="50" y="975" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" fill="#6a7385">
+    数据来源：v6 七天诊断，运行标识 d3d94eba55882665。图示仅用于说明因果与口径，不是正式历史。
+  </text>
+</svg>

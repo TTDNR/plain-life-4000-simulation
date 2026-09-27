@@ -8,6 +8,10 @@
 
 运行标识：`d3d94eba55882665`。正式长期模拟仍未启动。
 
+![v6 空间发现与信息对照示意](SPATIAL_ACCESS_DIAGNOSTIC.png)
+
+可编辑源文件：[SPATIAL_ACCESS_DIAGNOSTIC.svg](SPATIAL_ACCESS_DIAGNOSTIC.svg)
+
 ## 当前有限信息规则
 
 核对代码后的实际规则为：
