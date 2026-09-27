@@ -359,6 +359,7 @@ class SimulationCore:
             str, Callable[[SimulationCore, int, int], None]
         ] = {}
         self._module_requirements: dict[str, dict[str, Any]] = {}
+        self._active_start_transaction: dict[str, Any] | None = None
 
     @classmethod
     def create(
@@ -451,12 +452,25 @@ class SimulationCore:
             }
 
     def set_module_state(self, name: str, state: dict[str, Any]) -> None:
+        if self._active_start_transaction is not None:
+            captured = self._active_start_transaction[
+                "module_states"
+            ]
+            if name not in captured:
+                captured[name] = (
+                    True,
+                    copy.deepcopy(self.module_states[name]),
+                ) if name in self.module_states else (False, None)
         self.module_states[name] = copy.deepcopy(state)
 
     def module_state(self, name: str) -> dict[str, Any]:
         return copy.deepcopy(self.module_states[name])
 
     def register_person(self, person: PersonState) -> None:
+        if self._active_start_transaction is not None:
+            raise RuntimeError(
+                "register_person is outside the begin transaction boundary"
+            )
         if person.person_id in self.people:
             raise ValueError(f"duplicate person id {person.person_id}")
         self.people[person.person_id] = copy.deepcopy(person)
@@ -712,9 +726,20 @@ class SimulationCore:
         backup_items = copy.deepcopy(self.items)
         backup_person = copy.deepcopy(person)
         backup_scheduled_events = copy.deepcopy(self.scheduled_events)
+        backup_relationships = copy.deepcopy(self.relationships)
+        backup_knowledge = copy.deepcopy(self.knowledge)
+        backup_known_locations = copy.deepcopy(self.known_locations)
+        backup_stated_claims = copy.deepcopy(self.stated_claims)
+        backup_social_responses = copy.deepcopy(self.social_responses)
+        backup_commitments = copy.deepcopy(self.commitments)
+        backup_decisions = copy.deepcopy(self.decisions)
+        backup_random_state = self.random.getstate()
         backup_event_sequence = self.event_sequence
+        backup_item_sequence = self.item_sequence
+        backup_reservation_sequence = self.reservation_sequence
         backup_event_count = len(self.events)
         backup_scheduled_sequence = self.scheduled_sequence
+        self._active_start_transaction = {"module_states": {}}
         action.status = "starting"
         action.started_at_world_seconds = self.clock.current_world_seconds
         action.expected_end_world_seconds = (
@@ -730,9 +755,27 @@ class SimulationCore:
             self.items = backup_items
             self.people[person.person_id] = backup_person
             self.scheduled_events = backup_scheduled_events
+            self.relationships = backup_relationships
+            self.knowledge = backup_knowledge
+            self.known_locations = backup_known_locations
+            self.stated_claims = backup_stated_claims
+            self.social_responses = backup_social_responses
+            self.commitments = backup_commitments
+            self.decisions = backup_decisions
+            self.random.setstate(backup_random_state)
             self.event_sequence = backup_event_sequence
+            self.item_sequence = backup_item_sequence
+            self.reservation_sequence = backup_reservation_sequence
             self.scheduled_sequence = backup_scheduled_sequence
+            for name, (existed, previous) in (
+                self._active_start_transaction["module_states"].items()
+            ):
+                if existed:
+                    self.module_states[name] = previous
+                else:
+                    self.module_states.pop(name, None)
             del self.events[backup_event_count:]
+            self._active_start_transaction = None
             action = self.actions[action.action_id]
             return self._block_action(
                 action,
@@ -742,6 +785,7 @@ class SimulationCore:
                     "exception": str(exc),
                 },
             )
+        self._active_start_transaction = None
         action.status = "active"
         person.current_action_id = action.action_id
         event = self.emit_event(
@@ -1234,10 +1278,13 @@ class SimulationCore:
             paused=bool(snapshot["paused"]),
             random_state=snapshot["random_state"],
         )
-        for name, callback in (advance_callbacks or {}).items():
-            core.register_advance_callback(name, callback)
         core._module_requirements.update(
             copy.deepcopy(snapshot.get("module_requirements", {}))
+        )
+        _bind_required_modules(
+            core,
+            advance_callbacks=advance_callbacks,
+            module_factories=module_factories,
         )
         return core
 
@@ -1358,37 +1405,57 @@ class SimulationCore:
                 "missing handlers for active actions: "
                 f"{sorted(missing_handlers)}"
             )
-        core = cls.from_snapshot(
+        return cls.from_snapshot(
             snapshot,
             handlers=handlers,
             advance_callbacks=advance_callbacks,
+            module_factories=module_factories,
         )
-        for name, requirement in core._module_requirements.items():
-            if not requirement.get("required_for_advance", False):
-                continue
-            if name in core._advance_callbacks:
-                continue
-            factory = (module_factories or {}).get(name)
-            if factory is None:
-                raise ModuleBindingError(
-                    f"required module {name!r} is not bound after restore; "
-                    "provide module_factories or advance_callbacks"
-                )
-            callback = factory(core, core.module_state(name))
-            if callback is not None:
-                core.register_advance_callback(
-                    name,
-                    callback,
-                    required_for_advance=True,
-                    restore_factory=str(
-                        requirement.get("restore_factory", name)
-                    ),
-                )
-            if name not in core._advance_callbacks:
-                raise ModuleBindingError(
-                    f"module factory for {name!r} did not bind a callback"
-                )
-        return core
+
+
+def _bind_required_modules(
+    core: SimulationCore,
+    *,
+    advance_callbacks: dict[
+        str, Callable[[SimulationCore, int, int], None]
+    ]
+    | None,
+    module_factories: dict[
+        str,
+        Callable[
+            [SimulationCore, dict[str, Any]],
+            Callable[[SimulationCore, int, int], None] | None,
+        ],
+    ]
+    | None,
+) -> None:
+    for name, callback in (advance_callbacks or {}).items():
+        core.register_advance_callback(name, callback)
+    for name, requirement in core._module_requirements.items():
+        if not requirement.get("required_for_advance", False):
+            continue
+        if name in core._advance_callbacks:
+            continue
+        factory = (module_factories or {}).get(name)
+        if factory is None:
+            raise ModuleBindingError(
+                f"required module {name!r} is not bound after restore; "
+                "provide module_factories or advance_callbacks"
+            )
+        callback = factory(core, core.module_state(name))
+        if callback is not None:
+            core.register_advance_callback(
+                name,
+                callback,
+                required_for_advance=True,
+                restore_factory=str(
+                    requirement.get("restore_factory", name)
+                ),
+            )
+        if name not in core._advance_callbacks:
+            raise ModuleBindingError(
+                f"module factory for {name!r} did not bind a callback"
+            )
 
 
 def create_run(

@@ -1,4 +1,4 @@
-# S01-1 核心整改 A01—A04
+# S01-1 核心整改 A01—A04 / D02
 
 ## 范围
 
@@ -7,6 +7,8 @@
 状态：开发中，等待总控复核。S01-1 不因本地回归通过而自动验收。
 
 整改代码提交：`7246ff617097f907c2ad22e13959fe519569df2e`
+
+D02 收尾提交：见本文件后续“D02 收尾”与远端分支 HEAD。
 
 ## A01 启动失败残留行动
 
@@ -104,6 +106,83 @@
 - `register_advance_callback(..., required_for_advance, restore_factory)`
 - `SimulationCore.load(..., module_factories=...)`
 - `WorldClockAdapter.restore`
+
+## D02 收尾
+
+### 内存快照恢复
+
+问题：
+
+- `SimulationCore.from_snapshot` 接收了 `module_factories`，但没有执行必需模块检查或绑定。
+- SQLite `load` 路径正确，内存快照路径会静默停止环境。
+
+修复：
+
+- 抽出统一 `_bind_required_modules`。
+- `from_snapshot` 和 `load` 都使用同一恢复绑定逻辑。
+- 缺少必需模块时两者都抛出 `ModuleBindingError`。
+- 提供 `WorldClockAdapter.restore` 后，从快照状态复制出独立世界对象。
+
+回归：
+
+- `test_existing_world_follows_core_clock_and_round_trips` 同时覆盖：
+  - 保存前推进到第 1 天；
+  - SQLite 恢复后继续到第 2 天；
+  - 内存快照缺少模块工厂时阻断；
+  - 内存快照提供工厂后环境继续到第 2 天；
+  - 原核心和恢复核心的环境状态互相独立。
+
+### 启动事务边界
+
+问题：
+
+- `handler.begin` 失败虽然恢复了行动、人物、物品和预约，但未恢复模块状态、关系和随机状态。
+
+修复：
+
+- `handler.begin` 开始时建立统一启动事务。
+- 事务覆盖：
+  - 行动状态；
+  - 当前人物；
+  - 物品和预约；
+  - 模块状态；
+  - 关系；
+  - 知识、已知地点和人物说法；
+  - 社会回应和承诺；
+  - 待处理事件和事件序列；
+  - 物品、预约和事件序列号；
+  - 随机数生成器状态。
+- `handler.begin` 只能通过核心受限写接口修改权威状态。
+- `set_module_state` 在首次写入时捕获原模块状态。
+- `register_person` 不允许在启动事务内调用。
+- 失败后保留 `action_blocked` 事实记录，但不留下行动执行产生的世界变化。
+
+回归：
+
+- `test_handler_begin_failure_rolls_back_start_and_reservation` 覆盖模块状态、关系、知识、
+  待处理事件和随机状态的恢复。
+- 原始失败回放不再出现“行动未开始但世界已变化”。
+
+定向复现当前结果：
+
+```json
+{
+  "rollback": {
+    "action_status": "blocked",
+    "module_state": {"value": 1},
+    "relationship": 0.2,
+    "knowledge_present": false,
+    "pending_events": 0,
+    "random_restored": true
+  },
+  "from_snapshot_without_factory": "ModuleBindingError",
+  "from_snapshot_with_factory": {
+    "core_days": 2,
+    "environment_days": 2,
+    "original_environment_days": 1
+  }
+}
+```
 
 ## 接入裁决
 

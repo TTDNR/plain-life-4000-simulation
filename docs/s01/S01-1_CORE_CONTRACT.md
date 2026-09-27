@@ -105,7 +105,18 @@ loaded = SimulationCore.load(
         "environment_world": WorldClockAdapter.restore,
     },
 )
+
+snapshot_loaded = SimulationCore.from_snapshot(
+    snapshot,
+    handlers=handlers,
+    module_factories={
+        "environment_world": WorldClockAdapter.restore,
+    },
+)
 ```
+
+`load` 和 `from_snapshot` 使用同一必需模块绑定逻辑。二者缺少模块绑定时都失败，
+不会允许核心时间继续而领域模块停在旧状态。
 
 ## 与旧模型的适配
 
@@ -137,6 +148,20 @@ loaded = SimulationCore.load(
 - Mesa 未引入，因为当前 `WorldState` 和 `PopulationState` 已有可用 Python
   实现，新增适配层足以满足 S01-1。
 - 完整天气、生态和身体快照的模块化提交仍需在后续接入时逐项验证。
+
+## 启动写入边界
+
+`handler.begin` 只能通过核心受限写接口修改权威状态：
+
+- 预约或释放物品；
+- `set_module_state`；
+- `set_relationship`；
+- 知识、地点、人物说法、回应和承诺记录；
+- 调度待处理事件；
+- 使用核心随机数生成器。
+
+调用者不得直接修改核心公开容器。启动事务会恢复这些接口产生的写入以及随机状态；
+事务内调用 `register_person` 会被拒绝。
 
 ## D01 接入裁决
 

@@ -184,6 +184,26 @@ class CoreContractTests(unittest.TestCase):
             def begin(
                 self, core: SimulationCore, action: ActionRecord
             ) -> None:
+                core.set_module_state("probe", {"value": 999})
+                core.set_relationship(
+                    person_id="p1",
+                    other_person_id="p2",
+                    domain="trust",
+                    value=0.99,
+                )
+                core.random.random()
+                core.record_knowledge(
+                    person_id="p1",
+                    subject="uncommitted",
+                    stage="heard",
+                    source_event_id=None,
+                    certainty=0.1,
+                )
+                core.schedule_event(
+                    due_world_seconds=10,
+                    event_type="uncommitted_event",
+                    actor_ids=["p1"],
+                )
                 core.reserve_item(
                     batch_id="food",
                     quantity=0.2,
@@ -210,6 +230,14 @@ class CoreContractTests(unittest.TestCase):
                 owner_id="p1",
             )
         )
+        core.set_module_state("probe", {"value": 1})
+        core.set_relationship(
+            person_id="p1",
+            other_person_id="p2",
+            domain="trust",
+            value=0.2,
+        )
+        random_before = core.random.getstate()
         action = core.submit_action(
             ActionIntent(
                 action_id="failing-action",
@@ -224,6 +252,13 @@ class CoreContractTests(unittest.TestCase):
         self.assertIsNone(result.started_at_world_seconds)
         self.assertIsNone(core.people["p1"].current_action_id)
         self.assertFalse(core.reservations)
+        self.assertEqual({"value": 1}, core.module_state("probe"))
+        self.assertEqual(
+            0.2, core.relationships["p1"]["p2:trust"]
+        )
+        self.assertNotIn("p1", core.knowledge)
+        self.assertFalse(core.scheduled_events)
+        self.assertEqual(random_before, core.random.getstate())
         self.assertFalse(
             [
                 event
@@ -476,6 +511,23 @@ class CoreContractTests(unittest.TestCase):
         self.assertEqual(2, world.elapsed_days)
         state = core.module_state("environment_world")
         self.assertEqual(world.fingerprint(), world_from_state(state).fingerprint())
+        snapshot = core.snapshot()
+        with self.assertRaises(ModuleBindingError):
+            SimulationCore.from_snapshot(snapshot)
+        from_snapshot = SimulationCore.from_snapshot(
+            snapshot,
+            module_factories={
+                "environment_world": WorldClockAdapter.restore
+            },
+        )
+        from_snapshot.advance_to(3 * 86400)
+        self.assertEqual(
+            3,
+            from_snapshot.module_state("environment_world")[
+                "elapsed_days"
+            ],
+        )
+        self.assertEqual(2, core.module_state("environment_world")["elapsed_days"])
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "adapter.sqlite3"
             core.save(path)
