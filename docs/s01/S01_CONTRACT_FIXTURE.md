@@ -2,8 +2,8 @@
 
 这是 `contract_fixture`，不是正式世界历史，也不代表生存路径通过。
 
-- 运行标识：`c2f437fd7cad2ff8`
-- 代码提交：`7246ff617097f907c2ad22e13959fe519569df2e`
+- 运行标识：`fe22b48feaad14ab`
+- 代码提交：`4f4d45739eb619011d8427f69156fdf768e05195`
 - 模式：`contract_fixture`
 - 世界时间：`7200` 秒
 
@@ -30,18 +30,18 @@
 | 序号 | 世界秒 | 事件 | 行动 | 事实 |
 | ---: | ---: | --- | --- | --- |
 | 3 | 0 | `action_intent_submitted` | `action-interrupted-transfer` | `{'action_type': 'transfer_item', 'expected_outcome': 'p2 receives 0.6 kg', 'known_conditions': ['food-1 held by p1']}` |
-| 7 | 1800 | `action_interrupted` | `action-interrupted-transfer` | `{'progress_seconds': 1800, 'reason': 'fixture_interruption', 'result': {'reason': 'fixture_interruption', 'released_reservations': ['c2f437fd7cad2ff8:r00000001']}}` |
+| 7 | 1800 | `action_interrupted` | `action-interrupted-transfer` | `{'progress_seconds': 1800, 'reason': 'fixture_interruption', 'result': {'reason': 'fixture_interruption', 'released_reservations': ['fe22b48feaad14ab:r00000001']}}` |
 | 8 | 1800 | `action_intent_submitted` | `action-restored-transfer` | `{'action_type': 'transfer_item', 'expected_outcome': 'p3 receives 0.6 kg', 'known_conditions': ['food-1 is held by p1 after interruption']}` |
 | 11 | 1800 | `action_intent_submitted` | `action-competing-transfer` | `{'action_type': 'transfer_item', 'expected_outcome': 'p3 receives 0.6 kg', 'known_conditions': ['food-1 may still be held by p1']}` |
 | 12 | 1800 | `action_blocked` | `action-competing-transfer` | `{'facts': {'current_action_id': 'action-restored-transfer', 'person_id': 'p1'}, 'reason': 'actor_busy'}` |
-| 13 | 3000 | `item_transferred` | `action-restored-transfer` | `{'reservation_id': 'c2f437fd7cad2ff8:r00000002', 'source_batch_id': 'food-1', 'output_batch_id': 'food-1:transfer:000001', 'quantity': 0.6, 'unit': 'kg', 'to_owner_kind': 'person', 'to_owner_id': 'p3'}` |
+| 13 | 3000 | `item_transferred` | `action-restored-transfer` | `{'reservation_id': 'fe22b48feaad14ab:r00000002', 'source_batch_id': 'food-1', 'output_batch_id': 'food-1:transfer:000001', 'quantity': 0.6, 'unit': 'kg', 'to_owner_kind': 'person', 'to_owner_id': 'p3'}` |
 | 14 | 3000 | `action_completed` | `action-restored-transfer` | `{'output_batch_id': 'food-1:transfer:000001', 'quantity': 0.6, 'unit': 'kg', 'to_owner_kind': 'person', 'to_owner_id': 'p3'}` |
 
 ## 状态结果
 
-- 物品批次：`[{'batch_id': 'food-1', 'category': 'mixed_berries', 'quantity': 0.4, 'unit': 'kg', 'state': 'edible', 'owner_kind': 'person', 'owner_id': 'p1', 'location': {'x_m': 100.0, 'y_m': 200.0, 'cell_index': 102}, 'source_event_id': None, 'kcal_per_kg': 500.0, 'attributes': {'source': 'fixture'}}, {'batch_id': 'food-1:transfer:000001', 'category': 'mixed_berries', 'quantity': 0.6, 'unit': 'kg', 'state': 'edible', 'owner_kind': 'person', 'owner_id': 'p3', 'location': {'x_m': 120.0, 'y_m': 200.0, 'cell_index': 102}, 'source_event_id': 'c2f437fd7cad2ff8:e00000013', 'kcal_per_kg': 500.0, 'attributes': {'source': 'fixture'}}]`
+- 物品批次：`[{'batch_id': 'food-1', 'category': 'mixed_berries', 'quantity': 0.4, 'unit': 'kg', 'state': 'edible', 'owner_kind': 'person', 'owner_id': 'p1', 'location': {'x_m': 100.0, 'y_m': 200.0, 'cell_index': 102}, 'source_event_id': None, 'kcal_per_kg': 500.0, 'attributes': {'source': 'fixture'}}, {'batch_id': 'food-1:transfer:000001', 'category': 'mixed_berries', 'quantity': 0.6, 'unit': 'kg', 'state': 'edible', 'owner_kind': 'person', 'owner_id': 'p3', 'location': {'x_m': 120.0, 'y_m': 200.0, 'cell_index': 102}, 'source_event_id': 'fe22b48feaad14ab:e00000013', 'kcal_per_kg': 500.0, 'attributes': {'source': 'fixture'}}]`
 - 活跃行动：`[]`
-- 恢复前待处理事件：`[{'scheduled_id': 'c2f437fd7cad2ff8:q00000001', 'due_world_seconds': 7200, 'event_type': 'fixture_pending_event', 'actor_ids': ['p1'], 'facts': {'purpose': 'restore_pending_event_check'}, 'action_id': None, 'cause_event_ids': [], 'observed_by': ['p1', 'p2'], 'location': None}]`
+- 恢复前待处理事件：`[{'scheduled_id': 'fe22b48feaad14ab:q00000001', 'due_world_seconds': 7200, 'event_type': 'fixture_pending_event', 'actor_ids': ['p1'], 'facts': {'purpose': 'restore_pending_event_check'}, 'action_id': None, 'cause_event_ids': [], 'observed_by': ['p1', 'p2'], 'location': None}]`
 - 恢复后随机状态一致：`True`
 - 未来照护承诺恢复：`True`
 
