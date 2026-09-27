@@ -243,7 +243,8 @@ def _render_report(run: dict[str, Any]) -> str:
             "",
             f"- 物品批次：`{run['final_items']}`",
             f"- 活跃行动：`{run['active_actions_after_restore']}`",
-            f"- 待处理事件：`{run['pending_events_after_restore']}`",
+            f"- 恢复前待处理事件："
+            f"`{run['pending_events_before_restore']}`",
             f"- 恢复后随机状态一致：`{run['checks']['random_state_restored']}`",
             f"- 未来照护承诺恢复：`{run['checks']['future_commitment_restored']}`",
             "",
@@ -419,7 +420,7 @@ def main() -> int:
             for action in loaded.actions.values()
             if action.status == "active"
         ],
-        "pending_events_after_restore": pending_events,
+        "pending_events_before_restore": pending_events,
         "snapshot_before_restore": snapshot_before_restore,
         "outputs": {
             "before_restore": str(before_save.relative_to(ROOT)),

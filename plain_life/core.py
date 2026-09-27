@@ -187,11 +187,20 @@ class TransferItemHandler(BaseActionHandler):
         if not action.reservations:
             raise RuntimeError("transfer action has no reservation")
         target = action.target
+        to_owner_kind = str(target.get("to_owner_kind", "person"))
+        to_owner_id = str(target["to_owner_id"])
+        to_location = Location.from_dict(target.get("to_location"))
+        if (
+            to_location is None
+            and to_owner_kind == "person"
+            and to_owner_id in core.people
+        ):
+            to_location = core.people[to_owner_id].location
         output_batch = core.transfer_reserved_item(
             action.reservations[0],
-            to_owner_kind=str(target.get("to_owner_kind", "person")),
-            to_owner_id=str(target["to_owner_id"]),
-            to_location=Location.from_dict(target.get("to_location")),
+            to_owner_kind=to_owner_kind,
+            to_owner_id=to_owner_id,
+            to_location=to_location,
         )
         action.reservations.clear()
         return {
