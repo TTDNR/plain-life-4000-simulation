@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -261,6 +262,16 @@ def _render_report(run: dict[str, Any]) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--code-commit",
+        default=None,
+        help=(
+            "Code revision recorded in RunManifest. Defaults to current HEAD; "
+            "use the implementation commit for reproducible reports."
+        ),
+    )
+    arguments = parser.parse_args()
     fixture_path = ROOT / "data" / "s01" / "contract_fixture.json"
     fixture = _load_fixture(fixture_path)
     scenario_fingerprint = _stable_fingerprint(
@@ -278,7 +289,7 @@ def main() -> int:
             "unsupported": fixture["unsupported_capabilities"],
         }
     )
-    code_commit = _git_commit()
+    code_commit = arguments.code_commit or _git_commit()
     run_id = _stable_fingerprint(
         {
             "contract": CONTRACT_VERSION,
